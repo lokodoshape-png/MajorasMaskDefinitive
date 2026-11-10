@@ -7,6 +7,7 @@
 
 #include "2s2h/Enhancements/Saving/SavingEnhancements.h"
 #include "2s2h/GameInteractor/GameInteractor.h"
+#include "2s2h/Enhancements/QuestMenu/QuestMenuBridge.h"
 #include <libultraship/bridge/consolevariablebridge.h>
 
 void Sram_SyncWriteToFlash(SramContext* sramCtx, s32 curPage, s32 numPages);
@@ -1811,6 +1812,10 @@ void Sram_EraseSave(FileSelectState* fileSelect2, SramContext* sramCtx, s32 file
     FileSelectState* fileSelect = fileSelect2;
     s32 pad;
 
+    // 2S2H [Enhancement] The quest menu's "seen" state goes with the erased save (both the game's Erase and the
+    // title menu's call this).
+    QuestMenu_ForgetSave(fileNum);
+
     if (gSaveContext.flashSaveAvailable) {
         if (fileSelect->isOwlSave[fileNum + FILE_NUM_OWL_SAVE_OFFSET]) {
             func_80147314(sramCtx, fileNum);
@@ -1830,6 +1835,8 @@ void Sram_CopySave(FileSelectState* fileSelect2, SramContext* sramCtx) {
     s16 maskCount;
 
     if (gSaveContext.flashSaveAvailable) {
+        // 2S2H [Enhancement] The copy has the same quests seen in the quest menu as its source.
+        QuestMenu_CopySave(fileSelect->selectedFileIndex, fileSelect->copyDestFileIndex);
         if (fileSelect->isOwlSave[fileSelect->selectedFileIndex + FILE_NUM_OWL_SAVE_OFFSET]) {
             func_80147414(sramCtx, fileSelect->selectedFileIndex, fileSelect->copyDestFileIndex);
             fileSelect->threeDayResetCount[fileSelect->copyDestFileIndex + FILE_NUM_OWL_SAVE_OFFSET] =

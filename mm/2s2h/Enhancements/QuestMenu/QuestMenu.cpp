@@ -1181,6 +1181,8 @@ static void RegisterQuestMenu() {
         }
     });
     COND_HOOK(OnGameStateMainStart, true, QuestMenu::OnGameFrame);
+    // A new game in a slot (Sram_InitSave) starts with no quests seen, whatever the erased file there had.
+    COND_HOOK(OnSaveInit, true, [](s16 fileNum) { QuestMenu_ForgetSave(fileNum); });
 }
 
 static RegisterShipInitFunc sQuestMenuInit(RegisterQuestMenu, {});
@@ -1194,9 +1196,16 @@ extern "C" void QuestMenu_OpenFromPause(void) {
     QuestMenu::RequestOpen();
 }
 
-// "New" means more quests open (not locked) now than when the menu was last opened in this save slot. The count is
-// worked out at most twice a second, since every quest's checks read the save.
+// "New" means more quests open (not locked) now than when the menu was last opened in this save. The count is
+// worked out at most twice a second (kNewsRefreshMs, by the clock: the game's frame count runs at different rates),
+// since every quest's checks read the save.
+//
+// The "seen" count is kept per save slot (gEnhancements.QuestMenu.Seen<slot>). It belongs to the save in that slot,
+// not to the slot: it is cleared when the slot's save is erased or a new game is started in it, and copied with the
+// save by Copy, so a new file never shows (or hides) news from the file that was there before.
 namespace {
+
+constexpr uint32_t kNewsRefreshMs = 500;
 
 int OpenQuestCount() {
     int count = 0;
@@ -1208,12 +1217,23 @@ int OpenQuestCount() {
     return count;
 }
 
+std::string SeenCVar(int fileNum) {
+    return "gEnhancements.QuestMenu.Seen" + std::to_string(fileNum);
+}
+
 std::string SeenCVar() {
-    return "gEnhancements.QuestMenu.Seen" + std::to_string((int)gSaveContext.fileNum);
+    return SeenCVar((int)gSaveContext.fileNum);
 }
 
 int sNewsCount = -1;
-uint32_t sNewsFrame = 0;
+int sNewsFile = -1; // the save slot sNewsCount was counted for
+uint32_t sNewsTicks = 0;
+
+void SaveSeenCVars() {
+#ifndef QUEST_MENU_PREVIEW
+    Ship::Context::GetInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+#endif
+}
 
 } // namespace
 
@@ -1221,27 +1241,62 @@ extern "C" bool QuestMenu_HasNews(void) {
     if (!QuestMenu::SaveLoaded()) {
         return false;
     }
-    uint32_t frame = gPlayState->state.frames;
-    if (sNewsCount < 0 || frame - sNewsFrame >= 10) {
+    uint32_t now = SDL_GetTicks();
+    if (sNewsCount < 0 || sNewsFile != (int)gSaveContext.fileNum || now - sNewsTicks >= kNewsRefreshMs) {
         sNewsCount = OpenQuestCount();
-        sNewsFrame = frame;
+        sNewsFile = (int)gSaveContext.fileNum;
+        sNewsTicks = now;
     }
     std::string cvar = SeenCVar();
     int seen = CVarGetInteger(cvar.c_str(), -1);
     if (seen < 0) {
         // First look at this save: what is open now is not news.
         CVarSetInteger(cvar.c_str(), sNewsCount);
+        SaveSeenCVars();
         return false;
     }
     return sNewsCount > seen;
+}
+
+// The save in `fileNum` was erased or replaced by a new game: its quest menu state goes with it.
+extern "C" void QuestMenu_ForgetSave(int fileNum) {
+    if (fileNum < 0) {
+        return;
+    }
+    CVarClear(SeenCVar(fileNum).c_str());
+    if (sNewsFile == fileNum) {
+        sNewsCount = -1;
+        sNewsFile = -1;
+    }
+    SaveSeenCVars();
+}
+
+// The save in `from` was copied into `to`: the copy has the same quests seen.
+extern "C" void QuestMenu_CopySave(int from, int to) {
+    if (from < 0 || to < 0 || from == to) {
+        return;
+    }
+    int seen = CVarGetInteger(SeenCVar(from).c_str(), -1);
+    if (seen < 0) {
+        CVarClear(SeenCVar(to).c_str());
+    } else {
+        CVarSetInteger(SeenCVar(to).c_str(), seen);
+    }
+    if (sNewsFile == to) {
+        sNewsCount = -1;
+        sNewsFile = -1;
+    }
+    SaveSeenCVars();
 }
 
 namespace QuestMenu {
 void MarkQuestsSeen() {
     if (SaveLoaded()) {
         sNewsCount = OpenQuestCount();
+        sNewsFile = (int)gSaveContext.fileNum;
+        sNewsTicks = SDL_GetTicks();
         CVarSetInteger(SeenCVar().c_str(), sNewsCount);
-        Ship::Context::GetInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+        SaveSeenCVars();
     }
 }
 } // namespace QuestMenu
