@@ -815,7 +815,9 @@ public class MainActivity extends SDLActivity{
 
         if (requestCode == TRANSLATION_PICKER_REQUEST_CODE) {
             if (resultCode == RESULT_OK && data != null && data.getData() != null) {
-                installTranslationPack(data.getData());
+                final Uri pack = data.getData();
+                Toast.makeText(this, "Instalando a tradução...", Toast.LENGTH_SHORT).show();
+                fileJobs.execute(() -> installTranslationPack(pack));
             }
         } else if (requestCode == MUSIC_PICKER_REQUEST_CODE) {
             if (resultCode == RESULT_OK && data != null && data.getData() != null) {
@@ -1236,67 +1238,53 @@ public class MainActivity extends SDLActivity{
         }
     }
 
+    // Installs a picked translation pack as the only pack for Portuguese, then selects Portuguese for the next
+    // launch. The new pack is copied and checked (it must open as a game archive) in a work folder first; the old
+    // packs are only moved aside when the new one is ready, and come back if anything fails (StagedFiles), so the
+    // game is never left without its translation. Runs on fileJobs.
     private void installTranslationPack(Uri uri) {
-        File root = new File(Environment.getExternalStorageDirectory(), DATA_FOLDER);
+        File root = dataFolder();
         File folder = new File(root, TRANSLATION_FOLDER);
-
-        String name = null;
-        try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
-            if (cursor != null && cursor.moveToFirst()) {
-                int column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                if (column >= 0) {
-                    name = cursor.getString(column);
-                }
-            }
-        } catch (Exception e) {
-            Log.w("translation", "Could not read the file name", e);
-        }
-        if (name == null || name.isEmpty()) {
-            name = "traducao.o2r";
-        }
-        name = name.replaceAll("[/\\\\]", "_");
-        String lower = name.toLowerCase();
-        if (!lower.endsWith(".o2r") && !lower.endsWith(".zip") && !lower.endsWith(".otr")) {
-            Toast.makeText(this, "Escolha um arquivo .o2r, .zip ou .otr", Toast.LENGTH_LONG).show();
+        PickedFile picked = describe(uri, "traducao.o2r");
+        String name = picked.name;
+        String ext = FileOps.extension(name);
+        if (!ext.equals(".o2r") && !ext.equals(".zip") && !ext.equals(".otr")) {
+            toast("Escolha um arquivo .o2r, .zip ou .otr");
             return;
         }
-
-        if (!folder.isDirectory() && !folder.mkdirs()) {
-            Toast.makeText(this, "Não foi possível criar a pasta " + folder.getPath(), Toast.LENGTH_LONG).show();
-            return;
-        }
-        File[] oldPacks = folder.listFiles();
-        if (oldPacks != null) {
-            for (File old : oldPacks) {
-                if (old.isFile()) {
-                    old.delete();
-                }
+        File work = null;
+        File language = new File(root, LANGUAGE_FILE);
+        File languageNew = new File(root, LANGUAGE_FILE + ".novo");
+        try {
+            FileOps.mkdirs(folder);
+            work = StagedFiles.newWorkFolder(new File(root, TRANSLATION_WORK_FOLDER));
+            File copy = copyPicked(uri, picked, work);
+            File out = new File(work, "pronto");
+            FileOps.mkdirs(out);
+            File pack = new File(out, name);
+            FileOps.move(copy, pack);
+            String problem = SafeZip.archiveProblem(pack);
+            if (problem != null) {
+                throw new IOException("o pacote não serve (" + problem + ")");
+            }
+            // The language choice is written beside the old one first, and only takes its place with the pack.
+            FileOps.writeAtomically(languageNew, "pt-BR\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StagedFiles.commit(work, java.util.Collections.singletonList(pack), folder, true);
+            work = null;
+            FileOps.move(languageNew, language);
+            startupLog("Tradução instalada: " + name);
+            toast("Tradução instalada: " + name + ". Feche e abra o app para usar.");
+        } catch (IOException | RuntimeException e) {
+            Log.e("translation", "Failed to install the translation pack", e);
+            startupLog("Erro ao instalar a tradução " + name + ": " + e.getMessage());
+            languageNew.delete();
+            toast("Não foi possível instalar a tradução: " + e.getMessage()
+                    + ". A tradução que já estava instalada continua.");
+        } finally {
+            if (work != null) {
+                FileOps.deleteRecursive(work);
             }
         }
-
-        File target = new File(folder, name);
-        try (InputStream in = getContentResolver().openInputStream(uri);
-             OutputStream out = new FileOutputStream(target)) {
-            byte[] buffer = new byte[65536];
-            int read;
-            while ((read = in.read(buffer)) != -1) {
-                out.write(buffer, 0, read);
-            }
-        } catch (Exception e) {
-            Log.e("translation", "Failed to copy the translation pack", e);
-            target.delete();
-            Toast.makeText(this, "Erro ao copiar a tradução: " + e.getMessage(), Toast.LENGTH_LONG).show();
-            return;
-        }
-
-        try (OutputStream out = new FileOutputStream(new File(root, LANGUAGE_FILE))) {
-            out.write("pt-BR\n".getBytes());
-        } catch (IOException e) {
-            Log.e("translation", "Failed to save the language", e);
-        }
-
-        Toast.makeText(this, "Tradução instalada: " + name + ". Feche e abra o app para usar.", Toast.LENGTH_LONG)
-                .show();
     }
 
     public void openFilePicker() {
