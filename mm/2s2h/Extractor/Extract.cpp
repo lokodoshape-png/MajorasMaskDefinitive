@@ -107,13 +107,11 @@ extern "C" JNIEXPORT void JNICALL Java_com_dishii_mm_MainActivity_nativeHandleSe
 #endif
 
 void Extractor::ShowErrorBox(const char* title, const char* text) {
-#ifndef __ANDROID__
-    // The preparation screen, when it can open (SetupScreen.cpp); the system's box otherwise.
+    // The preparation screen, when it can open (SetupScreen.cpp; Java on Android); the system's box otherwise.
     if (SetupScreen::Ensure()) {
         SetupScreen::Ask(title, text, { "OK" }, 0, 0);
         return;
     }
-#endif
 #ifdef _WIN32
     MessageBoxA(nullptr, text, title, MB_OK | MB_ICONERROR);
 #else
@@ -165,24 +163,20 @@ int Extractor::ShowRomPickBox(uint32_t verCrc) const {
              "ROM encontrada: %s, CRC32 do cabeçalho: %8X. Parece ser: %s. Usar esta ROM?", mCurrentRomPath.c_str(),
              verCrc, verMap.at(verCrc));
 
-#ifndef __ANDROID__
     if (SetupScreen::Ensure()) {
         std::string file = std::filesystem::path(mCurrentRomPath).filename().string();
         std::string text = "Encontramos esta ROM:\n" + file + "\n\nVersão: " + verMap.at(verCrc) + ".\n\nUsar esta ROM?";
         return SetupScreen::Ask("ROM encontrada", text, { "Usar esta", "Não", "Procurar outra" }, 0, 1);
     }
-#endif
     SDL_ShowMessageBox(&boxData, &ret);
     return ret;
 }
 
 int Extractor::ShowYesNoBox(const char* title, const char* box) {
     int ret;
-#ifndef __ANDROID__
     if (SetupScreen::Ensure()) {
         return SetupScreen::Ask(title, box, { "Sim", "Não" }, 0, 1) == 0 ? IDYES : IDNO;
     }
-#endif
 #ifdef _WIN32
     ret = MessageBoxA(nullptr, box, title, MB_YESNO | MB_ICONQUESTION);
 #else

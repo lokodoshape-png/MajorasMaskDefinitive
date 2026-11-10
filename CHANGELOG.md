@@ -8,6 +8,14 @@ O jogo não vem com a ROM nem com assets da Nintendo. Você extrai os seus da su
 
 ## Base 4.0.2 (branch `mm3d-4.0`)
 
+### 2026-11-10 — versão 4.0.2-mm3d.14
+- **Tela de preparação no estilo do menu novo.** Quando os arquivos do jogo (o `mm.o2r`) ainda não existem, antes da
+  abertura aparece uma tela com o fundo e a lua do menu inicial, o painel roxo com bordas douradas e as mesmas fontes.
+  Ela dá as boas-vindas, pede a ROM, confirma a ROM encontrada e mostra a criação dos arquivos com uma barra dourada e
+  a porcentagem. No fim, "Tudo pronto" e o botão Jogar. Funciona com toque, mouse, teclado e controle. No PC ela
+  substitui as caixas do sistema e a janela de comandos; no Android, os avisos e a barra antigos. A abertura em vídeo
+  só começa depois dessa tela.
+
 ### 2026-11-10 — versão 4.0.2-mm3d.13
 - **Pergaminho QUESTS sem listras.** O pergaminho, a moldura, o ponto vermelho, o cartão QUESTS e o nome Diário de
   Missões apareciam embaralhados, em listras. Agora as imagens em alta resolução são carregadas inteiras e aparecem

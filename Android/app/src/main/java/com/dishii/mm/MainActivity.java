@@ -89,9 +89,79 @@ public class MainActivity extends SDLActivity{
         // The opening video goes over everything, including the touch controls, while the game boots under it.
         // After an update the setup question comes first; the video starts once it is answered, while the files are
         // copied (see checkAndSetupFiles).
+        // Without the game's files (mm.o2r), the preparation screen comes first and the opening plays after it.
         if (!setupQuestionShown) {
+            startIntroOrWaitForSetup();
+        }
+    }
+
+    // ----- The preparation screen (SetupOverlay.java; the game's side is mm/2s2h/Extractor/SetupScreen.cpp)
+
+    // The opening waits for the preparation screen: it starts when the game closes that screen (setupFinish).
+    private boolean introWaitsForSetup = false;
+    private boolean introPausedForSetup = false;
+
+    static boolean gameFilesMissing() {
+        File mm = new File(new File(Environment.getExternalStorageDirectory(), DATA_FOLDER), "mm.o2r");
+        return !mm.isFile() || mm.length() == 0;
+    }
+
+    private void startIntroOrWaitForSetup() {
+        if (gameFilesMissing()) {
+            startupLog("Sem mm.o2r: a tela de preparação vem antes da abertura");
+            introWaitsForSetup = true;
+            SetupOverlay.progress(this, "Preparando o jogo", "Um momento...", -1f);
+        } else {
             startIntro();
         }
+    }
+
+    void onSetupOverlayShown() {
+        if (introActive()) {
+            intro.pause();
+            introPausedForSetup = true;
+        }
+    }
+
+    void onSetupOverlayHidden() {
+        if (introPausedForSetup && introActive()) {
+            intro.resume();
+        }
+        introPausedForSetup = false;
+    }
+
+    // From the game: a question on the preparation screen. Waits for the answer (the game's thread, never the UI's).
+    public static int setupAsk(String title, String text, String[] buttons, int def, int cancel) {
+        final MainActivity activity = (MainActivity) mSingleton;
+        if (activity == null) {
+            return cancel;
+        }
+        startupLog("Tela de preparação: " + title);
+        int answer = SetupOverlay.askAndWait(activity, title, text, buttons, def, cancel);
+        startupLog("Tela de preparação: resposta " + answer);
+        return answer;
+    }
+
+    public static void setupProgress(String title, String text, float fraction) {
+        final MainActivity activity = (MainActivity) mSingleton;
+        if (activity != null) {
+            activity.runOnUiThread(() -> SetupOverlay.progress(activity, title, text, fraction));
+        }
+    }
+
+    // From the game, before its own screen starts: the preparation screen closes and the opening plays.
+    public static void setupFinish() {
+        final MainActivity activity = (MainActivity) mSingleton;
+        if (activity == null) {
+            return;
+        }
+        activity.runOnUiThread(() -> {
+            SetupOverlay.hide(activity);
+            if (activity.introWaitsForSetup) {
+                activity.introWaitsForSetup = false;
+                activity.startIntro();
+            }
+        });
     }
 
     // The setup question ("Configuração inicial") is on screen: the opening waits for its answer.
@@ -143,7 +213,7 @@ public class MainActivity extends SDLActivity{
     @Override
     protected void onResume() {
         super.onResume();
-        if (intro != null && intro.isActive()) {
+        if (intro != null && intro.isActive() && !introPausedForSetup) {
             intro.resume();
         }
     }
@@ -179,60 +249,27 @@ public class MainActivity extends SDLActivity{
         }
     }
 
-    // Bar shown while the game makes mm.o2r (Extract.cpp calls this a few times a second).
+    // Progress while the game makes mm.o2r (Extract.cpp calls this a few times a second), on the preparation screen.
     // total 0: starting; done == total: writing the file; -1: finished.
-    private static AlertDialog sExtractionDialog;
-    private static ProgressBar sExtractionBar;
-    private static TextView sExtractionText;
-
     public static void showExtractionProgress(final int done, final int total) {
         final MainActivity activity = (MainActivity) mSingleton;
         if (activity == null) {
             return;
         }
         activity.runOnUiThread(() -> {
+            String title = "Preparando o jogo";
+            String text = "Criando o mm.o2r com os arquivos da sua ROM. Isso só acontece uma vez e pode levar alguns "
+                    + "minutos.";
             if (done < 0) {
-                if (sExtractionDialog != null) {
-                    sExtractionDialog.dismiss();
-                    sExtractionDialog = null;
-                }
+                SetupOverlay.progress(activity, title, "Abrindo os arquivos do jogo...", -1f);
                 startupLog("Extração: barra fechada");
-                return;
-            }
-            if (sExtractionDialog == null) {
-                float density = activity.getResources().getDisplayMetrics().density;
-                int pad = (int) (24 * density);
-                LinearLayout layout = new LinearLayout(activity);
-                layout.setOrientation(LinearLayout.VERTICAL);
-                layout.setPadding(pad, pad / 2, pad, pad / 2);
-                sExtractionText = new TextView(activity);
-                sExtractionText.setTextSize(16);
-                sExtractionText.setGravity(Gravity.CENTER_HORIZONTAL);
-                sExtractionBar = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
-                sExtractionBar.setMax(100);
-                layout.addView(sExtractionText);
-                layout.addView(sExtractionBar, new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-                sExtractionDialog = new AlertDialog.Builder(activity)
-                        .setTitle("Criando o mm.o2r")
-                        .setMessage("Pode levar alguns minutos. Não feche o app.")
-                        .setView(layout)
-                        .setCancelable(false)
-                        .create();
-                sExtractionDialog.show();
-                startupLog("Extração: barra aberta");
-            }
-            if (total <= 0) {
-                sExtractionBar.setIndeterminate(true);
-                sExtractionText.setText("Preparando...");
+            } else if (total <= 0) {
+                SetupOverlay.progress(activity, title, text, -1f);
             } else if (done >= total) {
-                sExtractionBar.setIndeterminate(true);
-                sExtractionText.setText("100% - gravando o mm.o2r...");
+                SetupOverlay.progress(activity, title, text + "\n\nGravando o mm.o2r...", 1f);
             } else {
-                int percent = done * 100 / total;
-                sExtractionBar.setIndeterminate(false);
-                sExtractionBar.setProgress(percent);
-                sExtractionText.setText(percent + "% (" + done + " de " + total + " arquivos)");
+                SetupOverlay.progress(activity, title, text + "\n\n" + done + " de " + total + " arquivos",
+                        (float) done / total);
             }
         });
     }
@@ -411,19 +448,15 @@ public class MainActivity extends SDLActivity{
         startupLog("Faltando: assets=" + isMissingAssets + ", 2ship.o2r=" + isMissingSohOtr);
         if (!targetRootFolder.exists() || isMissingAssets || isMissingSohOtr) {
             setupQuestionShown = true;
-            new AlertDialog.Builder(this)
-                    .setTitle("Configuração inicial")
-                    .setMessage("O app vai criar os arquivos necessários na pasta " + DATA_FOLDER + " (cerca de 30s). Toque em OK para começar.")
-                    .setCancelable(false)
-                    .setPositiveButton("OK", (dialog, which) -> {
+            SetupOverlay.ask(this, "Bem-vindo",
+                    "Antes de jogar, o app vai copiar os arquivos dele para a pasta " + DATA_FOLDER
+                            + ". Leva cerca de 30 segundos.",
+                    new String[] { "Começar" }, 0, -1, index -> {
                         setupQuestionShown = false;
-                        startIntro();
-                        Executors.newSingleThreadExecutor().execute(() -> {
-                            runOnUiThread(() -> Toast.makeText(this, "Preparando os arquivos...", Toast.LENGTH_SHORT).show());
-                            setupFilesInBackground(targetRootFolder);
-                        });
-                    })
-                    .show();
+                        SetupOverlay.progress(this, "Configuração inicial",
+                                "Copiando os arquivos do app para a pasta " + DATA_FOLDER + "...", -1f);
+                        Executors.newSingleThreadExecutor().execute(() -> setupFilesInBackground(targetRootFolder));
+                    });
         } else {
             // No setup needed, still need to count down
             setupLatch.countDown();
@@ -470,6 +503,7 @@ public class MainActivity extends SDLActivity{
             if (!targetRootFolder.mkdirs()) {
                 Log.e("setupFiles", "Failed to create root folder");
                 runOnUiThread(() -> Toast.makeText(this, "Não foi possível criar a pasta " + DATA_FOLDER, Toast.LENGTH_LONG).show());
+                runOnUiThread(() -> SetupOverlay.hide(this));
                 setupLatch.countDown();
                 return;
             }
@@ -488,7 +522,6 @@ public class MainActivity extends SDLActivity{
             deleteRecursiveIfExists(targetAssetsDir);
             targetAssetsDir.mkdirs();
             AssetCopyUtil.copyAssetsToExternal(this, "assets", targetAssetsDir.getAbsolutePath());
-            runOnUiThread(() -> Toast.makeText(this, "Arquivos copiados", Toast.LENGTH_SHORT).show());
             startupLog("assets copiados");
         } catch (IOException e) {
             e.printStackTrace();
@@ -507,7 +540,6 @@ public class MainActivity extends SDLActivity{
                 out.write(buffer, 0, read);
             }
 
-            runOnUiThread(() -> Toast.makeText(this, "2ship.o2r copiado", Toast.LENGTH_SHORT).show());
             startupLog("2ship.o2r copiado (" + targetOtrFile.length() + " bytes)");
 
         } catch (IOException e) {
@@ -516,6 +548,16 @@ public class MainActivity extends SDLActivity{
             runOnUiThread(() -> Toast.makeText(this, "Erro ao copiar o 2ship.o2r", Toast.LENGTH_LONG).show());
         }
 
+        // The opening plays now, or after the game prepared its files on the same screen.
+        runOnUiThread(() -> {
+            if (gameFilesMissing()) {
+                introWaitsForSetup = true;
+                SetupOverlay.progress(this, "Preparando o jogo", "Um momento...", -1f);
+            } else {
+                SetupOverlay.hide(this);
+                startIntro();
+            }
+        });
         setupLatch.countDown();
     }
 
@@ -1173,6 +1215,9 @@ public class MainActivity extends SDLActivity{
     // A physical gamepad in use hides the touch controls; touching the screen in game brings them back.
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (SetupOverlay.dispatchKey(event)) {
+            return true;
+        }
         if (intro != null && intro.isActive() && intro.onKey(event)) {
             return true;
         }
@@ -1184,6 +1229,9 @@ public class MainActivity extends SDLActivity{
 
     @Override
     public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        if (SetupOverlay.dispatchMotion(event)) {
+            return true;
+        }
         if (intro != null && intro.isActive()) {
             return true; // sticks do nothing under the opening video
         }

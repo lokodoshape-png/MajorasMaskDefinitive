@@ -594,6 +594,135 @@ void Shutdown() {
 
 } // namespace SetupScreen
 
+#elif defined(__ANDROID__)
+
+// Android: the screen is drawn in Java (SetupOverlay.java), over the app; these calls go to MainActivity.
+#include <algorithm>
+#include <SDL2/SDL.h>
+#include <jni.h>
+
+namespace SetupScreen {
+
+namespace {
+
+bool sAllowed = false;
+bool sShown = false;
+
+// MainActivity, looked up on the calling thread (the game's, which can see the app's classes).
+jclass ActivityClass(JNIEnv* env) {
+    jclass c = env->FindClass("com/dishii/mm/MainActivity");
+    if (c == nullptr) {
+        env->ExceptionClear();
+    }
+    return c;
+}
+
+jmethodID StaticMethod(JNIEnv* env, jclass c, const char* name, const char* sig) {
+    jmethodID m = env->GetStaticMethodID(c, name, sig);
+    if (m == nullptr) {
+        env->ExceptionClear();
+    }
+    return m;
+}
+
+constexpr const char* kAskSig = "(Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;II)I";
+
+} // namespace
+
+void Allow(bool allowed) {
+    sAllowed = allowed;
+}
+
+bool Ensure() {
+    if (!sAllowed) {
+        return false;
+    }
+    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
+    jclass c = env != nullptr ? ActivityClass(env) : nullptr;
+    if (c == nullptr) {
+        return false;
+    }
+    bool ok = StaticMethod(env, c, "setupAsk", kAskSig) != nullptr;
+    env->DeleteLocalRef(c);
+    return ok;
+}
+
+int Ask(const std::string& title, const std::string& text, const std::vector<std::string>& buttons, int def,
+        int cancel) {
+    if (!Ensure() || buttons.empty()) {
+        return cancel;
+    }
+    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
+    jclass c = ActivityClass(env);
+    jmethodID m = StaticMethod(env, c, "setupAsk", kAskSig);
+    jclass stringClass = env->FindClass("java/lang/String");
+    int n = (int)std::min<size_t>(buttons.size(), 4);
+    jobjectArray array = env->NewObjectArray(n, stringClass, nullptr);
+    for (int i = 0; i < n; i++) {
+        jstring b = env->NewStringUTF(buttons[i].c_str());
+        env->SetObjectArrayElement(array, i, b);
+        env->DeleteLocalRef(b);
+    }
+    jstring jt = env->NewStringUTF(title.c_str());
+    jstring jx = env->NewStringUTF(text.c_str());
+    jint answer = env->CallStaticIntMethod(c, m, jt, jx, array, (jint)def, (jint)cancel);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        answer = cancel;
+    }
+    env->DeleteLocalRef(jt);
+    env->DeleteLocalRef(jx);
+    env->DeleteLocalRef(array);
+    env->DeleteLocalRef(stringClass);
+    env->DeleteLocalRef(c);
+    sShown = true;
+    return answer;
+}
+
+bool Progress(const std::string& title, const std::string& text, float fraction) {
+    if (!Ensure()) {
+        return true;
+    }
+    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
+    jclass c = ActivityClass(env);
+    jmethodID m = StaticMethod(env, c, "setupProgress", "(Ljava/lang/String;Ljava/lang/String;F)V");
+    if (m != nullptr) {
+        jstring jt = env->NewStringUTF(title.c_str());
+        jstring jx = env->NewStringUTF(text.c_str());
+        env->CallStaticVoidMethod(c, m, jt, jx, (jfloat)fraction);
+        env->ExceptionClear();
+        env->DeleteLocalRef(jt);
+        env->DeleteLocalRef(jx);
+    }
+    env->DeleteLocalRef(c);
+    sShown = true;
+    SDL_Delay(100); // the Java screen animates by itself; this only updates what it shows
+    return true;
+}
+
+void Shutdown() {
+    sAllowed = false;
+    sShown = false;
+    // Always: the opening waits for this when the game files were missing at launch.
+    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
+    jclass c = env != nullptr ? ActivityClass(env) : nullptr;
+    if (c == nullptr) {
+        return;
+    }
+    jmethodID m = StaticMethod(env, c, "setupFinish", "()V");
+    if (m != nullptr) {
+        env->CallStaticVoidMethod(c, m);
+        env->ExceptionClear();
+    }
+    env->DeleteLocalRef(c);
+}
+
+bool Active() {
+    return sShown;
+}
+
+} // namespace SetupScreen
+
 #else
 
 namespace SetupScreen {

@@ -684,7 +684,7 @@ void DetectArchiveVersion(std::string fileName, bool isO2rType) {
             std::string installPath = Ship::Context::GetAppBundlePath();
             if (!ExtractorAssetsPresent(installPath)) {
                 Extractor::ShowErrorBox(
-                    "Extractor assets not found",
+                    "Arquivos do extrator não encontrados",
                     "Unable to regenerate. Missing assets folder needed to generate O2R file.\n\nExiting...");
                 exit(1);
             }
@@ -774,8 +774,8 @@ extern "C" void InitOTR() {
         std::string installPath = Ship::Context::GetAppBundlePath();
         if (!ExtractorAssetsPresent(installPath)) {
             Extractor::ShowErrorBox(
-                "Extractor assets not found",
-                "No game O2R file found. Missing assets folder needed to generate O2R file. Exiting...");
+                "Arquivos do extrator não encontrados",
+                "Não há mm.o2r e falta a pasta assets, que é usada para criá-lo. Instale o jogo de novo.");
             exit(1);
         }
 
@@ -787,7 +787,7 @@ extern "C" void InitOTR() {
             StartupLog_Step("Criando mm.o2r");
             Extractor extract;
             if (!extract.Run(Ship::Context::GetAppDirectoryPath(appShortName))) {
-                Extractor::ShowErrorBox("Error", "An error occurred, no O2R file was generated. Exiting...");
+                Extractor::ShowErrorBox("Erro", "Não foi possível criar o mm.o2r. O jogo vai fechar.");
                 exit(1);
             }
             extract.CallZapd(installPath, Ship::Context::GetAppDirectoryPath(appShortName));
