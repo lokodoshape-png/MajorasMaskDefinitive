@@ -8,6 +8,29 @@ O jogo não vem com a ROM nem com assets da Nintendo. Você extrai os seus da su
 
 ## Base 4.0.2 (branch `mm3d-4.0`)
 
+### 2026-11-10 — versão 4.0.2-mm3d.15 (estabilização)
+- **Permissão de arquivos sem travar.** Se a permissão for negada, aparece uma explicação com **Tentar de novo** (ou
+  **Abrir configurações**, quando o Android não pergunta mais) e **Sair**. Voltar das configurações com a permissão
+  dada continua de onde parou. O jogo nunca fica esperando para sempre: ele só começa quando os arquivos estão prontos,
+  e sair antes disso fecha o app direito. No Android 10 a pasta do jogo voltou a ser visível para o app.
+- **Instalação dos arquivos do app sem risco.** A cópia nova vai para uma pasta temporária, cada arquivo é conferido
+  (tamanho e SHA-256) e só então substitui a anterior. Se algo falhar, os arquivos que funcionavam continuam lá, e dá
+  para tentar de novo ou jogar com eles. Se o app fechar no meio, a próxima abertura desfaz a troca. Numa versão nova,
+  o `mm.o2r` antigo fica guardado até o novo ser criado.
+- **Migração completa.** Saves, mods, traduções, músicas e configurações de instalações antigas vêm cada um por conta
+  própria, mesmo sem a pasta `saves`. Nada que já está na pasta é sobrescrito: quando os dois lados têm um arquivo
+  diferente, o antigo fica em `migracao/conflitos`. Tudo é registrado em `migracao/migracao.log`.
+- **Mods e traduções seguros.** Zips com arquivos demais, grandes demais, compactados de forma suspeita ou com caminhos
+  que saem da pasta são recusados. O mod ou a tradução nova é conferido antes de entrar, e o que já estava instalado só
+  é trocado quando a cópia nova está boa. A instalação não trava mais a tela.
+- **Controles.** O controle virtual da tela é ligado e desligado com o app, botões não ficam presos quando o app vai para
+  o fundo, e um controle Bluetooth ou USB ligado ou desligado com o app fora é percebido na volta.
+- **Diário de Missões.** O ponto vermelho de missões novas pertence ao save, não ao espaço do save: apagar um arquivo ou
+  começar um jogo novo no mesmo espaço não herda mais o estado do jogo anterior, e Copiar leva o estado junto.
+- **Build release e CI.** Há um build release (não debuggable) com assinatura própria guardada nos GitHub Secrets; o APK
+  publicado continua o mesmo, com a mesma assinatura (veja `docs/android-assinatura-release.md`). Pull requests para
+  `mm3d-4.0` são compilados e testados antes de entrar.
+
 ### 2026-11-10 — versão 4.0.2-mm3d.14
 - **Tela de preparação no estilo do menu novo.** Quando os arquivos do jogo (o `mm.o2r`) ainda não existem, antes da
   abertura aparece uma tela com o fundo e a lua do menu inicial, o painel roxo com bordas douradas e as mesmas fontes.
