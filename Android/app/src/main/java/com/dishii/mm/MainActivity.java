@@ -471,68 +471,6 @@ public class MainActivity extends SDLActivity{
     private static final String TRANSLATION_FOLDER = "traducoes/pt-BR";
     private static final String LANGUAGE_FILE = "idioma.txt";
 
-    // Moves mm.o2r, saves, mods and the rest from the folder used before the rename. Files already in the new folder
-    // are kept; whatever could not be moved stays in the old folder.
-    private void migrateOldDataFolder() {
-        File storage = Environment.getExternalStorageDirectory();
-        File oldFolder = new File(storage, OLD_DATA_FOLDER);
-        File newFolder = new File(storage, DATA_FOLDER);
-        File[] children = oldFolder.listFiles();
-        if (children == null) {
-            return;
-        }
-        if (!newFolder.isDirectory() && oldFolder.renameTo(newFolder)) {
-            startupLog("Pasta " + OLD_DATA_FOLDER + " renomeada para " + DATA_FOLDER);
-            return;
-        }
-        newFolder.mkdirs();
-        int moved = 0;
-        for (File child : children) {
-            File target = new File(newFolder, child.getName());
-            if (!target.exists() && child.renameTo(target)) {
-                moved++;
-            }
-        }
-        oldFolder.delete(); // only succeeds when everything was moved
-        startupLog(moved + " itens movidos de " + OLD_DATA_FOLDER + " para " + DATA_FOLDER);
-    }
-
-    // Saves of the very first builds, kept in the app's own folder (Android/data/<package>/files).
-    private void migrateAndroidDataLegacy(File targetRootFolder) {
-        File sourceOldRoot = getExternalFilesDir(null);
-        File sourceSavesDir = new File(sourceOldRoot, "saves"); // how to tell if there's anything to migrate
-
-        // === Migration from old Android/data/.../files/ directory ===
-        if (sourceOldRoot != null && sourceSavesDir.isDirectory()) {
-            Log.i("setupFiles", "Migrating old data from: " + sourceOldRoot.getAbsolutePath());
-
-            File[] sourceFiles = sourceOldRoot.listFiles();
-            if (sourceFiles != null) {
-                for (File file : sourceFiles) {
-                    String name = file.getName();
-                    if (name.equals("assets") || name.equals("2ship.o2r") || name.equals("mm.o2r")) {
-                        continue; // Skip these
-                    }
-
-                    File dest = new File(targetRootFolder, name);
-                    try {
-                        if (file.isDirectory()) {
-                            AssetCopyUtil.copyDirectory(file, dest);
-                        } else {
-                            AssetCopyUtil.copyFile(file, dest);
-                        }
-                        Log.i("setupFiles", "Migrated: " + name);
-                    } catch (IOException e) {
-                        Log.e("setupFiles", "Failed to migrate: " + name, e);
-                    }
-                }
-            }
-
-            runOnUiThread(() -> Toast.makeText(this, "Saves migrados", Toast.LENGTH_SHORT).show());
-        }
-
-    }
-
     private String portFilesStamp() {
         long installedAt = 0;
         try {
@@ -586,7 +524,7 @@ public class MainActivity extends SDLActivity{
         String installed = install.installedStamp();
         String wanted = portFilesStamp();
         boolean needsInstall = !wanted.equals(installed);
-        boolean needsMigration = false;
+        boolean needsMigration = androidDataMigrationPending();
         startupLog("Arquivos do app: " + (installed == null ? "incompletos ou ausentes" : "build " + installed)
                 + (needsInstall ? ", precisa instalar o build " + wanted : ", em dia")
                 + (needsMigration ? "; dados antigos em Android/data para migrar" : ""));
@@ -619,8 +557,8 @@ public class MainActivity extends SDLActivity{
                 INSTALL_SLOW_MS);
         Executors.newSingleThreadExecutor().execute(() -> {
             File root = dataFolder();
-            if (install) {
-                migrateAndroidDataLegacy(root);
+            if (androidDataMigrationPending()) {
+                migrateAndroidData(root);
             }
             String error = null;
             if (install) {
@@ -762,6 +700,108 @@ public class MainActivity extends SDLActivity{
         if (backup.exists() && archive.isFile() && archive.length() > 0) {
             startupLog("mm.o2r novo criado: apagando o antigo guardado");
             FileOps.deleteRecursive(backup);
+        }
+    }
+
+    // ----- Older installs
+
+    private static final java.util.Set<String> PORT_ITEMS = new java.util.HashSet<>(java.util.Arrays.asList(
+            PortInstall.ASSETS, PortInstall.PORT_O2R, PortInstall.MANIFEST, PortInstall.STAGING,
+            PortInstall.PREVIOUS, STARTUP_LOG));
+    // From Android/data the old-format mm.o2r is left too: this version cannot use it.
+    private static final java.util.Set<String> ANDROID_DATA_SKIP = new java.util.HashSet<>(java.util.Arrays.asList(
+            PortInstall.ASSETS, PortInstall.PORT_O2R, GAME_ARCHIVE, STARTUP_LOG));
+    private static final String ANDROID_DATA_DONE = "android-data.concluida";
+    private static final String MIGRATION_LOG = "migracao.log";
+
+    private static void migrationLog(String line) {
+        startupLog(line);
+        File folder = new File(dataFolder(), DataMigration.FOLDER);
+        folder.mkdirs();
+        try (FileWriter out = new FileWriter(new File(folder, MIGRATION_LOG), true)) {
+            String time = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date());
+            out.write("[" + time + "] " + line + "\n");
+        } catch (IOException e) {
+            Log.w("migration", "Could not write the migration log", e);
+        }
+    }
+
+    // The folder used before the rename (2S2H-MM3D): its contents move into the data folder. When the data folder
+    // does not exist yet the whole folder is renamed; otherwise each item is merged on its own (DataMigration).
+    private void migrateOldDataFolder() {
+        File storage = Environment.getExternalStorageDirectory();
+        File oldFolder = new File(storage, OLD_DATA_FOLDER);
+        File newFolder = new File(storage, DATA_FOLDER);
+        if (!oldFolder.isDirectory()) {
+            return;
+        }
+        if (!newFolder.exists() && oldFolder.renameTo(newFolder)) {
+            migrationLog("Pasta " + OLD_DATA_FOLDER + " renomeada para " + DATA_FOLDER);
+            return;
+        }
+        // The port's own files are made again from this APK; the rest (saves, mods, mm.o2r...) is moved.
+        java.util.Set<String> skip = new java.util.HashSet<>(PORT_ITEMS);
+        new DataMigration(newFolder, MainActivity::migrationLog).migrate(oldFolder, OLD_DATA_FOLDER, true, skip);
+        // What is left is only the old copy of the port's files (this APK has its own): the old folder can go, so
+        // this does not run again at every start.
+        File[] left = oldFolder.listFiles();
+        if (left != null) {
+            for (File item : left) {
+                if (!skip.contains(item.getName())) {
+                    migrationLog("Pasta " + OLD_DATA_FOLDER + " mantida: ainda tem " + item.getName());
+                    return;
+                }
+            }
+            for (File item : left) {
+                FileOps.deleteRecursive(item);
+            }
+            if (oldFolder.delete()) {
+                migrationLog("Pasta " + OLD_DATA_FOLDER + " vazia apagada");
+            }
+        }
+    }
+
+    // Data of the very first builds, kept in the app's own folder (Android/data/<package>/files).
+    private boolean androidDataMigrationPending() {
+        File source = getExternalFilesDir(null);
+        if (source == null || new File(new File(dataFolder(), DataMigration.FOLDER), ANDROID_DATA_DONE).exists()) {
+            return false;
+        }
+        File[] children = source.listFiles();
+        if (children == null) {
+            return false;
+        }
+        for (File child : children) {
+            if (!ANDROID_DATA_SKIP.contains(child.getName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Copied (the originals stay), each category on its own; marked done only when nothing failed, so an
+    // interrupted or partly failed migration runs again next time and carries on.
+    private void migrateAndroidData(File root) {
+        File source = getExternalFilesDir(null);
+        if (source == null) {
+            return;
+        }
+        DataMigration migration = new DataMigration(root, MainActivity::migrationLog);
+        boolean complete = migration.migrate(source, "Android-data", false, ANDROID_DATA_SKIP);
+        if (complete) {
+            try {
+                FileOps.writeAtomically(new File(new File(root, DataMigration.FOLDER), ANDROID_DATA_DONE),
+                        ("concluída " + new Date() + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            } catch (IOException e) {
+                migrationLog("Não foi possível marcar a migração como concluída: " + e.getMessage());
+            }
+        }
+        final int count = migration.copied;
+        final int conflicts = migration.conflicts;
+        if (count > 0 || conflicts > 0) {
+            runOnUiThread(() -> Toast.makeText(this, count + " arquivo(s) migrado(s)"
+                    + (conflicts > 0 ? ", " + conflicts + " conflito(s) guardado(s) em migracao/conflitos" : ""),
+                    Toast.LENGTH_LONG).show());
         }
     }
 
