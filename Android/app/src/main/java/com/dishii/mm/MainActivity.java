@@ -76,7 +76,7 @@ public class MainActivity extends SDLActivity{
         }
 
         setupControllerOverlay();
-        attachController();
+        attachTouchController();
         // The virtual triggers start centred, which reads as half pressed.
         setButton(ControllerButtons.AXIS_LT, false);
         setButton(ControllerButtons.AXIS_RT, false);
@@ -200,6 +200,8 @@ public class MainActivity extends SDLActivity{
         if (intro != null && intro.isActive()) {
             intro.pause();
         }
+        // A finger on the touch controls when the app leaves would keep that button held in the game.
+        releaseTouchInputs();
         super.onPause();
     }
 
@@ -208,6 +210,10 @@ public class MainActivity extends SDLActivity{
         super.onResume();
         // Back from the app's settings, where the storage permission may have been allowed.
         recheckStorageAccess(false);
+        // A controller may have been connected or switched off (Bluetooth sleep) while the app was away.
+        if (touchButtonGroup != null) {
+            setHiddenForGamepad(hasPhysicalGamepad());
+        }
         if (intro != null && intro.isActive() && !introPausedForSetup) {
             intro.resume();
         }
@@ -218,6 +224,13 @@ public class MainActivity extends SDLActivity{
         // The game's thread may still wait for the files; it must be released, or SDL's onDestroy waits for it
         // forever.
         setupGate.cancel("app fechado");
+        releaseTouchInputs();
+        if (inputDeviceListener != null) {
+            ((InputManager) getSystemService(Context.INPUT_SERVICE)).unregisterInputDeviceListener(inputDeviceListener);
+            inputDeviceListener = null;
+        }
+        detachTouchController();
+        fileJobs.shutdown(); // a mod or translation install under way still finishes
         super.onDestroy();
     }
 
@@ -1412,8 +1425,14 @@ public class MainActivity extends SDLActivity{
         disableFocus(overlayView);
         controlsHiddenForGamepad = hasPhysicalGamepad();
         updateTouchControlsVisibility();
+        // One listener for the activity's life (removed in onDestroy), for USB and Bluetooth controllers coming and
+        // going. SDL itself handles the controllers for the game (SDLControllerManager); this only hides and shows
+        // the touch controls.
+        if (inputDeviceListener != null) {
+            return;
+        }
         InputManager inputManager = (InputManager) getSystemService(Context.INPUT_SERVICE);
-        inputManager.registerInputDeviceListener(new InputManager.InputDeviceListener() {
+        inputDeviceListener = new InputManager.InputDeviceListener() {
             @Override
             public void onInputDeviceAdded(int deviceId) {
                 if (isPhysicalGamepad(InputDevice.getDevice(deviceId))) {
@@ -1430,8 +1449,50 @@ public class MainActivity extends SDLActivity{
 
             @Override
             public void onInputDeviceChanged(int deviceId) {
+                setHiddenForGamepad(hasPhysicalGamepad());
             }
-        }, null);
+        };
+        inputManager.registerInputDeviceListener(inputDeviceListener, null);
+    }
+
+    private InputManager.InputDeviceListener inputDeviceListener;
+
+    // The touch overlay's virtual controller (libultraship's Mobile.cpp): attached once for the activity, detached
+    // when it is destroyed, so a recreated activity does not add a second virtual pad.
+    private static boolean sTouchControllerAttached = false;
+
+    private void attachTouchController() {
+        if (!sTouchControllerAttached) {
+            attachController();
+            sTouchControllerAttached = true;
+        }
+    }
+
+    private void detachTouchController() {
+        if (sTouchControllerAttached) {
+            detachController();
+            sTouchControllerAttached = false;
+        }
+    }
+
+    // Lets go of every button, trigger and stick the touch overlay may be holding.
+    private void releaseTouchInputs() {
+        if (!sTouchControllerAttached) {
+            return;
+        }
+        for (int button : new int[] { ControllerButtons.BUTTON_A, ControllerButtons.BUTTON_B,
+                ControllerButtons.BUTTON_X, ControllerButtons.BUTTON_Y, ControllerButtons.BUTTON_LB,
+                ControllerButtons.BUTTON_RB, ControllerButtons.BUTTON_START, ControllerButtons.BUTTON_BACK }) {
+            setButton(button, false);
+        }
+        setButton(ControllerButtons.AXIS_LT, false);
+        setButton(ControllerButtons.AXIS_RT, false);
+        setAxis(ControllerButtons.AXIS_LX, (short) 0);
+        setAxis(ControllerButtons.AXIS_LY, (short) 0);
+        setAxis(ControllerButtons.AXIS_RX, (short) 0);
+        setAxis(ControllerButtons.AXIS_RY, (short) 0);
+        setCameraState(0, 0.0f);
+        setCameraState(1, 0.0f);
     }
 
     private static void disableFocus(View view) {
@@ -1487,16 +1548,7 @@ public class MainActivity extends SDLActivity{
         }
         // Clear anything the overlay was holding so the game does not see a stuck button or stick.
         if (hidden) {
-            for (int button : new int[] { ControllerButtons.BUTTON_A, ControllerButtons.BUTTON_B,
-                    ControllerButtons.BUTTON_X, ControllerButtons.BUTTON_Y, ControllerButtons.BUTTON_LB,
-                    ControllerButtons.BUTTON_RB, ControllerButtons.BUTTON_START, ControllerButtons.BUTTON_BACK }) {
-                setButton(button, false);
-            }
-            setButton(ControllerButtons.AXIS_RT, false);
-            setAxis(ControllerButtons.AXIS_LX, (short) 0);
-            setAxis(ControllerButtons.AXIS_LY, (short) 0);
-            setAxis(ControllerButtons.AXIS_RX, (short) 0);
-            setAxis(ControllerButtons.AXIS_RY, (short) 0);
+            releaseTouchInputs();
         }
     }
 
