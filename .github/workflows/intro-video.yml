@@ -32,7 +32,7 @@ jobs:
       # going black at 264.88 s: the picture fades out over its last 0.6 s and the sound over its last 2 s.
       END: "264.8"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install ffmpeg and the transcriber
         run: |
