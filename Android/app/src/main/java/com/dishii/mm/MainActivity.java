@@ -517,6 +517,8 @@ public class MainActivity extends SDLActivity{
             showSetupError("Não foi possível criar a pasta " + DATA_FOLDER + " no armazenamento do aparelho.", true);
             return;
         }
+        StagedFiles.recover(new File(root, MODS_WORK_FOLDER), MainActivity::startupLog);
+        StagedFiles.recover(new File(root, TRANSLATION_WORK_FOLDER), MainActivity::startupLog);
         PortInstall install = portInstall();
         install.recover();
         dropGameArchiveBackupIfReplaced(root);
@@ -822,14 +824,18 @@ public class MainActivity extends SDLActivity{
             }
         } else if (requestCode == MOD_PICKER_REQUEST_CODE) {
             if (resultCode == RESULT_OK && data != null) {
+                java.util.List<Uri> uris = new java.util.ArrayList<>();
                 if (data.getClipData() != null) {
                     for (int i = 0; i < data.getClipData().getItemCount(); i++) {
-                        installMod(data.getClipData().getItemAt(i).getUri());
+                        uris.add(data.getClipData().getItemAt(i).getUri());
                     }
                 } else if (data.getData() != null) {
-                    installMod(data.getData());
+                    uris.add(data.getData());
                 }
-                nativeModsInstalled();
+                if (!uris.isEmpty()) {
+                    Toast.makeText(this, "Instalando o mod...", Toast.LENGTH_SHORT).show();
+                    installModsInBackground(uris);
+                }
             }
         } else if (requestCode == FILE_PICKER_REQUEST_CODE && (resultCode != RESULT_OK || data == null)) {
             // Picker closed without a file: unblock the extractor, which reports that no ROM was chosen.
@@ -1028,8 +1034,14 @@ public class MainActivity extends SDLActivity{
             }
             File file = new File(path);
             File parent = file.getParentFile();
-            if (parent != null && !parent.isDirectory()) {
-                parent.mkdirs();
+            if (parent != null) {
+                FileOps.mkdirs(parent);
+            }
+            if (total > SafeZip.MAX_TOTAL_BYTES) {
+                return "erro\no arquivo é grande demais (" + (total >> 20) + " MB)";
+            }
+            if (total > 0 && parent != null && !SafeZip.hasFreeSpace(parent, total * 2)) {
+                return "erro\nnão há espaço livre suficiente no aparelho";
             }
             try (InputStream in = connection.getInputStream(); OutputStream out = new FileOutputStream(file)) {
                 byte[] buffer = new byte[65536];
@@ -1039,6 +1051,9 @@ public class MainActivity extends SDLActivity{
                 while ((read = in.read(buffer)) != -1) {
                     out.write(buffer, 0, read);
                     done += read;
+                    if (done > SafeZip.MAX_TOTAL_BYTES) {
+                        throw new IOException("o arquivo é grande demais");
+                    }
                     if (done - lastReport > 262144) {
                         nativeDownloadProgress(done, total);
                         lastReport = done;
@@ -1072,8 +1087,8 @@ public class MainActivity extends SDLActivity{
     }
 
     private static boolean isModArchiveName(String name) {
-        String lower = name.toLowerCase();
-        return lower.endsWith(".o2r") || lower.endsWith(".otr") || lower.endsWith(".zip");
+        String ext = FileOps.extension(name);
+        return ext.equals(".o2r") || ext.equals(".otr") || ext.equals(".zip");
     }
 
     private static void copyStream(InputStream in, OutputStream out) throws IOException {
@@ -1084,91 +1099,141 @@ public class MainActivity extends SDLActivity{
         }
     }
 
-    // Copies a mod into the mods folder. A .zip that only wraps .o2r/.otr files (how mods are often downloaded)
-    // has those files taken out; any other .zip is a mod archive itself and is copied as it is.
-    private void installMod(Uri uri) {
-        File folder = new File(new File(Environment.getExternalStorageDirectory(), DATA_FOLDER), MODS_FOLDER);
+    // Mod and translation installs run here, one after the other, off the UI thread (a large pack would freeze
+    // the screen long enough for Android to offer closing the app).
+    private final java.util.concurrent.ExecutorService fileJobs = Executors.newSingleThreadExecutor();
 
-        String name = null;
+    // Work folders of mod and translation installs (StagedFiles), outside mods/ and traducoes/, which the game
+    // scans recursively.
+    static final String MODS_WORK_FOLDER = ".mods-instalando";
+    static final String TRANSLATION_WORK_FOLDER = ".traducao-instalando";
+
+    private void toast(String text) {
+        runOnUiThread(() -> Toast.makeText(this, text, Toast.LENGTH_LONG).show());
+    }
+
+    private static final class PickedFile {
+        String name;
+        long size = -1;
+    }
+
+    private PickedFile describe(Uri uri, String fallback) {
+        PickedFile picked = new PickedFile();
         try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
             if (cursor != null && cursor.moveToFirst()) {
                 int column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
                 if (column >= 0) {
-                    name = cursor.getString(column);
+                    picked.name = cursor.getString(column);
+                }
+                int size = cursor.getColumnIndex(OpenableColumns.SIZE);
+                if (size >= 0 && !cursor.isNull(size)) {
+                    picked.size = cursor.getLong(size);
                 }
             }
         } catch (Exception e) {
-            Log.w("mods", "Could not read the file name", e);
+            Log.w("files", "Could not read the file name", e);
         }
-        if (name == null || name.isEmpty()) {
-            name = "mod.o2r";
+        picked.name = FileOps.safeFileName(picked.name, fallback);
+        return picked;
+    }
+
+    // Copies a picked file into `work`, refusing more than SafeZip.MAX_TOTAL_BYTES and checking the free space
+    // when the size is known.
+    private File copyPicked(Uri uri, PickedFile picked, File work) throws IOException {
+        if (picked.size > 0 && !SafeZip.hasFreeSpace(work, picked.size * 2)) {
+            throw new IOException("não há espaço livre suficiente no aparelho");
         }
-        name = name.replaceAll("[/\\\\]", "_");
+        File copy = new File(work, "recebido" + FileOps.extension(picked.name));
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in == null) {
+                throw new IOException("não foi possível abrir o arquivo escolhido");
+            }
+            FileOps.copy(in, copy, SafeZip.MAX_TOTAL_BYTES);
+        }
+        return copy;
+    }
+
+    // Installs the picked mods off the UI thread, then tells the game (live apply).
+    private void installModsInBackground(java.util.List<Uri> uris) {
+        fileJobs.execute(() -> {
+            int installed = 0;
+            for (Uri uri : uris) {
+                if (installMod(uri)) {
+                    installed++;
+                }
+            }
+            if (installed > 0) {
+                nativeModsInstalled();
+            }
+        });
+    }
+
+    // Installs one mod into the mods folder. A .zip that only wraps .o2r/.otr files (how mods are often
+    // downloaded) has those taken out; any other .zip is a mod archive itself and goes in as it is.
+    // Everything is made and checked in a work folder first (SafeZip limits, each archive opened once), and only
+    // then moved into mods/ (StagedFiles): a mod of the same name is replaced only by a good copy, and a failure
+    // leaves the mods already installed as they were. Runs on fileJobs.
+    private boolean installMod(Uri uri) {
+        File root = dataFolder();
+        File folder = new File(root, MODS_FOLDER);
+        PickedFile picked = describe(uri, "mod.o2r");
+        String name = picked.name;
         if (!isModArchiveName(name)) {
-            Toast.makeText(this, "Escolha um mod .o2r, .otr ou .zip (" + name + ")", Toast.LENGTH_LONG).show();
-            return;
+            toast("Escolha um mod .o2r, .otr ou .zip (" + name + ")");
+            return false;
         }
-        if (!folder.isDirectory() && !folder.mkdirs()) {
-            Toast.makeText(this, "Não foi possível criar a pasta " + folder.getPath(), Toast.LENGTH_LONG).show();
-            return;
-        }
-
-        java.util.List<String> installed = new java.util.ArrayList<>();
+        File work = null;
         try {
-            if (name.toLowerCase().endsWith(".zip")) {
-                // First pass: does the zip only wrap mod archives?
-                boolean hasArchives = false;
-                boolean hasOther = false;
-                try (java.util.zip.ZipInputStream zip =
-                         new java.util.zip.ZipInputStream(getContentResolver().openInputStream(uri))) {
-                    java.util.zip.ZipEntry entry;
-                    while ((entry = zip.getNextEntry()) != null) {
-                        if (entry.isDirectory()) {
-                            continue;
+            FileOps.mkdirs(folder);
+            work = StagedFiles.newWorkFolder(new File(root, MODS_WORK_FOLDER));
+            File copy = copyPicked(uri, picked, work);
+            File out = new File(work, "pronto");
+            FileOps.mkdirs(out);
+            java.util.List<File> ready = new java.util.ArrayList<>();
+            if (FileOps.extension(name).equals(".zip")) {
+                try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(copy)) {
+                    SafeZip.Scan scan = SafeZip.scan(zip);
+                    if (scan.wrapsArchives()) {
+                        if (!SafeZip.hasFreeSpace(work, scan.archiveBytes)) {
+                            throw new IOException("não há espaço livre suficiente para descompactar o mod");
                         }
-                        String entryName = new File(entry.getName()).getName();
-                        String lower = entryName.toLowerCase();
-                        if (lower.endsWith(".o2r") || lower.endsWith(".otr")) {
-                            hasArchives = true;
-                        } else if (!lower.endsWith(".txt") && !lower.endsWith(".md") && !lower.endsWith(".pdf") &&
-                                   !lower.endsWith(".png") && !lower.endsWith(".jpg")) {
-                            hasOther = true;
-                        }
+                        ready.addAll(SafeZip.extractArchives(zip, scan, out));
                     }
-                }
-                if (hasArchives && !hasOther) {
-                    try (java.util.zip.ZipInputStream zip =
-                             new java.util.zip.ZipInputStream(getContentResolver().openInputStream(uri))) {
-                        java.util.zip.ZipEntry entry;
-                        while ((entry = zip.getNextEntry()) != null) {
-                            String entryName = new File(entry.getName()).getName();
-                            String lower = entryName.toLowerCase();
-                            if (entry.isDirectory() || !(lower.endsWith(".o2r") || lower.endsWith(".otr"))) {
-                                continue;
-                            }
-                            try (OutputStream out = new FileOutputStream(new File(folder, entryName))) {
-                                copyStream(zip, out);
-                            }
-                            installed.add(entryName);
-                        }
-                    }
+                } catch (java.util.zip.ZipException e) {
+                    throw new IOException("o zip está danificado (" + e.getMessage() + ")", e);
                 }
             }
-            if (installed.isEmpty()) {
-                try (InputStream in = getContentResolver().openInputStream(uri);
-                     OutputStream out = new FileOutputStream(new File(folder, name))) {
-                    copyStream(in, out);
-                }
-                installed.add(name);
+            if (ready.isEmpty()) {
+                File asIs = new File(out, name);
+                FileOps.move(copy, asIs);
+                ready.add(asIs);
             }
-        } catch (Exception e) {
+            for (File file : ready) {
+                String problem = SafeZip.archiveProblem(file);
+                if (problem != null) {
+                    throw new IOException(file.getName() + ": " + problem);
+                }
+            }
+            java.util.List<String> names = new java.util.ArrayList<>();
+            for (File file : ready) {
+                names.add(file.getName());
+            }
+            StagedFiles.commit(work, ready, folder, false);
+            work = null;
+            startupLog("Mod instalado: " + android.text.TextUtils.join(", ", names));
+            toast("Mod instalado: " + android.text.TextUtils.join(", ", names) + ".");
+            return true;
+        } catch (IOException | RuntimeException e) {
             Log.e("mods", "Failed to install the mod", e);
-            Toast.makeText(this, "Erro ao instalar o mod: " + e.getMessage(), Toast.LENGTH_LONG).show();
-            return;
+            startupLog("Erro ao instalar o mod " + name + ": " + e.getMessage());
+            toast("Não foi possível instalar o mod " + name + ": " + e.getMessage()
+                    + ". Os mods já instalados não foram alterados.");
+            return false;
+        } finally {
+            if (work != null) {
+                FileOps.deleteRecursive(work);
+            }
         }
-
-        Toast.makeText(this, "Mod instalado: " + android.text.TextUtils.join(", ", installed) + ".",
-                       Toast.LENGTH_LONG).show();
     }
 
     private void installTranslationPack(Uri uri) {
