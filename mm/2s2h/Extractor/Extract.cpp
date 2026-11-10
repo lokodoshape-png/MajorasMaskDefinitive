@@ -5,6 +5,7 @@
 #pragma comment(lib, "Shlwapi.lib")
 #endif
 #include "Extract.h"
+#include "SetupScreen.h"
 #include "2s2h/Android/StartupLog.h"
 #include "portable-file-dialogs.h"
 #include <ship/utils/binarytools/BitConverter.h>
@@ -106,6 +107,13 @@ extern "C" JNIEXPORT void JNICALL Java_com_dishii_mm_MainActivity_nativeHandleSe
 #endif
 
 void Extractor::ShowErrorBox(const char* title, const char* text) {
+#ifndef __ANDROID__
+    // The preparation screen, when it can open (SetupScreen.cpp); the system's box otherwise.
+    if (SetupScreen::Ensure()) {
+        SetupScreen::Ask(title, text, { "OK" }, 0, 0);
+        return;
+    }
+#endif
 #ifdef _WIN32
     MessageBoxA(nullptr, text, title, MB_OK | MB_ICONERROR);
 #else
@@ -157,12 +165,24 @@ int Extractor::ShowRomPickBox(uint32_t verCrc) const {
              "ROM encontrada: %s, CRC32 do cabeçalho: %8X. Parece ser: %s. Usar esta ROM?", mCurrentRomPath.c_str(),
              verCrc, verMap.at(verCrc));
 
+#ifndef __ANDROID__
+    if (SetupScreen::Ensure()) {
+        std::string file = std::filesystem::path(mCurrentRomPath).filename().string();
+        std::string text = "Encontramos esta ROM:\n" + file + "\n\nVersão: " + verMap.at(verCrc) + ".\n\nUsar esta ROM?";
+        return SetupScreen::Ask("ROM encontrada", text, { "Usar esta", "Não", "Procurar outra" }, 0, 1);
+    }
+#endif
     SDL_ShowMessageBox(&boxData, &ret);
     return ret;
 }
 
 int Extractor::ShowYesNoBox(const char* title, const char* box) {
     int ret;
+#ifndef __ANDROID__
+    if (SetupScreen::Ensure()) {
+        return SetupScreen::Ask(title, box, { "Sim", "Não" }, 0, 1) == 0 ? IDYES : IDNO;
+    }
+#endif
 #ifdef _WIN32
     ret = MessageBoxA(nullptr, box, title, MB_YESNO | MB_ICONQUESTION);
 #else
@@ -590,11 +610,12 @@ std::string Extractor::Mkdtemp() {
 extern "C" int zapd_main(int argc, char** argv);
 static void MessageboxWorker();
 
-#ifdef __ANDROID__
-// ZAPD counts the files it has extracted (patches/zapdtr-android.patch). A thread passes the count to
-// MainActivity.showExtractionProgress, which shows a bar with the percentage over the app.
+// ZAPD counts the files it has extracted (patches/zapdtr-android.patch, applied on every platform). On Android a
+// thread passes the count to MainActivity.showExtractionProgress; on PC the preparation screen shows it.
 extern "C" volatile int gZapdFilesDone;
 extern "C" volatile int gZapdFilesTotal;
+
+#ifdef __ANDROID__
 static std::atomic<bool> sProgressRunning = false;
 static std::thread sProgressThread;
 
@@ -713,19 +734,30 @@ bool Extractor::CallZapd(std::string installPath, std::string exportdir) {
     argv[20] = "-osf";
     argv[21] = "placeholder";
 
+    // On PC the preparation screen shows the progress while ZAPD works on another thread (below); without it, the
+    // command window (Windows) or a message box (Linux) says the extraction is running.
+#ifndef __ANDROID__
+    const bool setupScreen = SetupScreen::Ensure();
+#else
+    const bool setupScreen = false;
+#endif
 #ifdef _WIN32
     // Grab a handle to the command window.
     HWND cmdWindow = GetConsoleWindow();
 
     // Normally the command window is hidden. We want the window to be shown here so the user can see the progess of the
     // extraction.
-    ShowWindow(cmdWindow, SW_SHOW);
-    SetWindowPos(cmdWindow, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE);
+    if (!setupScreen) {
+        ShowWindow(cmdWindow, SW_SHOW);
+        SetWindowPos(cmdWindow, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE);
+    }
 #elif defined(__ANDROID__)
     StartAndroidProgress();
 #else
-    std::thread mbThread(MessageboxWorker);
-    mbThread.detach();
+    if (!setupScreen) {
+        std::thread mbThread(MessageboxWorker);
+        mbThread.detach();
+    }
 #endif
 
 #ifdef __ANDROID__
@@ -742,17 +774,46 @@ bool Extractor::CallZapd(std::string installPath, std::string exportdir) {
     StartupLog_Step("ZAPD começou (ROM %s, pasta %s)", romPath.c_str(), tempdir.c_str());
     // ZAPD reports a failure by throwing. Uncaught, that closes the app without a word.
     std::string failure;
-    try {
-        if (zapd_main(argc, (char**)argv.data()) != 0) {
-            failure = "O ZAPD terminou com erro.";
+    auto runZapd = [&]() {
+        try {
+            if (zapd_main(argc, (char**)argv.data()) != 0) {
+                failure = "O ZAPD terminou com erro.";
+            }
+        } catch (const std::exception& e) { failure = e.what(); } catch (...) {
+            failure = "Erro desconhecido no ZAPD.";
         }
-    } catch (const std::exception& e) { failure = e.what(); } catch (...) {
-        failure = "Erro desconhecido no ZAPD.";
+    };
+#ifndef __ANDROID__
+    if (setupScreen) {
+        gZapdFilesDone = 0;
+        gZapdFilesTotal = 0;
+        std::atomic<bool> finished = false;
+        std::thread worker([&]() {
+            runZapd();
+            finished = true;
+        });
+        while (!finished) {
+            int total = gZapdFilesTotal, done = gZapdFilesDone;
+            std::string text = "Criando o mm.o2r com os arquivos da sua ROM. Isso só acontece uma vez e pode levar "
+                               "alguns minutos.";
+            if (total > 0) {
+                text += "\n\n" + std::to_string(std::min(done, total)) + " de " + std::to_string(total) + " arquivos";
+            }
+            SetupScreen::Progress("Preparando o jogo", text, total > 0 ? (float)done / total : -1.0f);
+        }
+        worker.join();
+    } else {
+        runZapd();
     }
+#else
+    runZapd();
+#endif
 
 #ifdef _WIN32
     // Hide the command window again.
-    ShowWindow(cmdWindow, SW_HIDE);
+    if (!setupScreen) {
+        ShowWindow(cmdWindow, SW_HIDE);
+    }
 #endif
 
 #ifdef __ANDROID__

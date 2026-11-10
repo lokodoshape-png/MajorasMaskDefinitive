@@ -19,6 +19,8 @@ jobs:
         submodules: true
     - name: Apply libultraship patch (MM3D cel shading and colour options)
       run: git -C libultraship apply --ignore-whitespace ../patches/libultraship-mm3d.patch
+    - name: Apply ZAPD patch (extraction progress for the setup screen)
+      run: git -C ZAPDTR apply --ignore-whitespace ../patches/zapdtr-android.patch
     - name: Configure ccache
       uses: hendrikmuhs/ccache-action@v1.2
       with:
@@ -89,6 +91,8 @@ jobs:
         submodules: true
     - name: Apply libultraship patch (MM3D cel shading and colour options)
       run: git -C libultraship apply --ignore-whitespace ../patches/libultraship-mm3d.patch
+    - name: Apply ZAPD patch (extraction progress for the setup screen)
+      run: git -C ZAPDTR apply --ignore-whitespace ../patches/zapdtr-android.patch
     - name: Install dependencies
       run: |
         sudo apt-get update
@@ -199,6 +203,8 @@ jobs:
         submodules: true
     - name: Apply libultraship patch (MM3D cel shading and colour options)
       run: git -C libultraship apply --ignore-whitespace ../patches/libultraship-mm3d.patch
+    - name: Apply ZAPD patch (extraction progress for the setup screen)
+      run: git -C ZAPDTR apply --ignore-whitespace ../patches/zapdtr-android.patch
     - name: Configure sccache
       uses: hendrikmuhs/ccache-action@v1.2
       with:

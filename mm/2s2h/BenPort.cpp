@@ -37,6 +37,7 @@
 #include <SDL2/SDL_scancode.h>
 #endif
 #include "Extractor/Extract.h"
+#include "Extractor/SetupScreen.h"
 #include "Language/GameLanguage.h"
 #include "2s2h/Enhancements/Audio/MusicFolder.h"
 #include "2s2h/Enhancements/Controls/ButtonPrompts.h"
@@ -673,14 +674,12 @@ void DetectArchiveVersion(std::string fileName, bool isO2rType) {
         }
 
         snprintf(msgBuf, 250,
-                 "The %s file was generated with a different version of 2 Ship 2 Harkinian.\n"
-                 "O2R version: %s\n\n"
-                 "You must regenerate to be able to play, otherwise the program will exit.\n"
-                 "Would you like to regenerate it now?",
+                 "O arquivo %s foi criado por outra versão do jogo (versão do arquivo: %s).\n\n"
+                 "Para jogar, ele precisa ser criado de novo a partir da sua ROM. Criar agora?",
                  fileName.c_str(), version);
 
         StartupLog_Step("mm.o2r antigo (versão %s)", version);
-        if (Extractor::ShowYesNoBox("Old O2R File Found", msgBuf) == IDYES) {
+        if (Extractor::ShowYesNoBox("Arquivos do jogo desatualizados", msgBuf) == IDYES) {
             StartupLog_Step("Criando mm.o2r de novo");
             std::string installPath = Ship::Context::GetAppBundlePath();
             if (!ExtractorAssetsPresent(installPath)) {
@@ -748,6 +747,9 @@ extern "C" void InitOTR() {
     Ship::WiiU::Init(appShortName);
 #endif
 
+    // From here until the game's window opens, questions and errors appear on the preparation screen.
+    SetupScreen::Allow(true);
+
     // BENTODO: OTRExporter is filling the version file with garbage. Uncomment once fixed.
     // Check2ShipArchiveVersion(Ship::Context::GetPathRelativeToAppBundle("2ship.o2r"));
 
@@ -777,7 +779,11 @@ extern "C" void InitOTR() {
             exit(1);
         }
 
-        if (Extractor::ShowYesNoBox("No O2R File", "No O2R files found. Generate one now?") == IDYES) {
+        if (Extractor::ShowYesNoBox(
+                "Bem-vindo",
+                "Para jogar, a Definitive Edition precisa preparar os arquivos do jogo (o mm.o2r) a partir da sua ROM "
+                "do Majora's Mask de Nintendo 64. Isso é feito uma vez só e leva alguns minutos.\n\n"
+                "A ROM não vem com o jogo: use a sua própria cópia. Começar agora?") == IDYES) {
             StartupLog_Step("Criando mm.o2r");
             Extractor extract;
             if (!extract.Run(Ship::Context::GetAppDirectoryPath(appShortName))) {
@@ -790,6 +796,12 @@ extern "C" void InitOTR() {
         }
     }
 #endif
+
+    // The files were prepared on the preparation screen: say so, then close it before the game's window opens.
+    if (SetupScreen::Active()) {
+        SetupScreen::Ask("Tudo pronto", "Os arquivos do jogo foram preparados. Boa viagem a Termina!", { "Jogar" }, 0, 0);
+    }
+    SetupScreen::Shutdown();
 
     StartupLog_Step("Abrindo os arquivos do jogo");
     OTRGlobals::Instance = new OTRGlobals();
