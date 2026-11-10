@@ -4,56 +4,35 @@ import android.content.Context;
 import android.content.res.AssetManager;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 
+// Copies out of the APK's assets and between folders. Every mkdirs(), listFiles() and stream that fails throws,
+// so a copy never ends "successfully" with files missing. The port's own files are installed by PortInstall,
+// which also checks them; these are for other copies.
 public class AssetCopyUtil {
 
     public static void copyAssetsToExternal(Context context, String assetsFolderPath, String externalFolderPath) throws IOException {
         AssetManager assetManager = context.getAssets();
         String[] assetFiles = assetManager.list(assetsFolderPath);
+        if (assetFiles == null) {
+            throw new IOException("não foi possível listar " + assetsFolderPath + " no APK");
+        }
+        FileOps.mkdirs(new File(externalFolderPath));
 
         for (String assetFile : assetFiles) {
             String assetPath = assetsFolderPath + File.separator + assetFile;
             String externalPath = externalFolderPath + File.separator + assetFile;
+            String[] children = assetManager.list(assetPath);
 
-            if (assetManager.list(assetPath).length > 0) {
-                // It's a directory
-                // Check if the directory exists in the external storage
-                File externalDir = new File(externalPath);
-                if (!externalDir.exists()) {
-                    externalDir.mkdirs(); // Create the directory if it doesn't exist
-                }
-
-                // Recursively copy contents of the directory
+            if (children != null && children.length > 0) {
+                // A directory
                 copyAssetsToExternal(context, assetPath, externalPath);
             } else {
-                // It's a file
                 File externalFile = new File(externalPath);
                 if (!externalFile.exists()) {
-                    // Check if the file exists in the external storage
-                    InputStream in = null;
-                    OutputStream out = null;
-
-                    try {
-                        in = assetManager.open(assetPath);
-                        out = new FileOutputStream(externalPath);
-
-                        byte[] buffer = new byte[1024];
-                        int read;
-                        while ((read = in.read(buffer)) != -1) {
-                            out.write(buffer, 0, read);
-                        }
-
-                    } finally {
-                        if (in != null) {
-                            in.close();
-                        }
-                        if (out != null) {
-                            out.close();
-                        }
+                    try (InputStream in = assetManager.open(assetPath)) {
+                        FileOps.copy(in, externalFile, Long.MAX_VALUE);
                     }
                 }
             }
@@ -61,10 +40,8 @@ public class AssetCopyUtil {
     }
 
     public static void copyDirectory(File sourceDir, File targetDir) throws IOException {
-        if (!targetDir.exists()) {
-            targetDir.mkdirs();
-        }
-        for (File file : sourceDir.listFiles()) {
+        FileOps.mkdirs(targetDir);
+        for (File file : FileOps.list(sourceDir)) {
             File dest = new File(targetDir, file.getName());
             if (file.isDirectory()) {
                 copyDirectory(file, dest);
@@ -75,13 +52,12 @@ public class AssetCopyUtil {
     }
 
     public static void copyFile(File source, File dest) throws IOException {
-        try (InputStream in = new FileInputStream(source);
-             OutputStream out = new FileOutputStream(dest)) {
-            byte[] buf = new byte[64*1024];
-            int len;
-            while ((len = in.read(buf)) > 0) {
-                out.write(buf, 0, len);
-            }
+        long size;
+        try (InputStream in = new FileInputStream(source)) {
+            size = FileOps.copy(in, dest, Long.MAX_VALUE).size;
+        }
+        if (size != source.length()) {
+            throw new IOException("cópia incompleta de " + source.getPath());
         }
     }
 }

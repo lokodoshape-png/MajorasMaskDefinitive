@@ -81,7 +81,7 @@ public class MainActivity extends SDLActivity{
         setButton(ControllerButtons.AXIS_LT, false);
         setButton(ControllerButtons.AXIS_RT, false);
 
-        // Storage access first, then the port's files (checkAndSetupFiles). The opening video goes over everything,
+        // Storage access first, then the port's files (onStorageReady). The opening video goes over everything,
         // including the touch controls, while the game boots under it. After an update the setup question comes
         // first; the video starts once it is answered. Without the game's files (mm.o2r), the preparation screen
         // comes first and the opening plays after it.
@@ -458,83 +458,6 @@ public class MainActivity extends SDLActivity{
         finish();
     }
 
-    // Runs before every setup check, whichever way the storage permission was granted. A new versionCode means a new
-    // port version, so the game's mm.o2r has to be made again too. Any other update (a new build of the same version)
-    // only replaces the port's own files, so a new 2ship.o2r and extractor assets are not left behind by an old copy.
-    private void doVersionCheck(){
-        int currentVersion = BuildConfig.VERSION_CODE;
-        int storedVersion = preferences.getInt("appVersion", 1);
-        long installedAt = 0;
-        try {
-            installedAt = getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime;
-        } catch (PackageManager.NameNotFoundException e) {
-            Log.w("versionCheck", "No package info", e);
-        }
-        long storedInstalledAt = preferences.getLong("appInstalledAt", 0);
-
-        if (currentVersion > storedVersion) {
-            startupLog("Versão nova (" + storedVersion + " -> " + currentVersion + "): apagando arquivos antigos e o mm.o2r");
-            deleteOutdatedAssets();
-        } else if (installedAt != storedInstalledAt) {
-            startupLog("App atualizado: trocando 2ship.o2r e assets");
-            deletePortFiles();
-        }
-        preferences.edit().putInt("appVersion", currentVersion).putLong("appInstalledAt", installedAt).apply();
-    }
-
-    private void deletePortFiles() {
-        File targetRootFolder = new File(Environment.getExternalStorageDirectory(), DATA_FOLDER);
-        deleteIfExists(new File(targetRootFolder, "2ship.o2r"));
-        deleteRecursiveIfExists(new File(targetRootFolder, "assets"));
-    }
-
-    private void deleteOutdatedAssets() {
-        File targetRootFolder = new File(Environment.getExternalStorageDirectory(), DATA_FOLDER);
-
-        File sohFile = new File(targetRootFolder, "2ship.o2r");
-        File ootFile = new File(targetRootFolder, "mm.o2r");
-        File assetsFolder = new File(targetRootFolder, "assets");
-
-        deleteIfExists(sohFile);
-        deleteIfExists(ootFile);
-        deleteRecursiveIfExists(assetsFolder);
-    }
-
-    private void deleteIfExists(File file) {
-        if (file.exists()) {
-            if (file.delete()) {
-                Log.i("deleteAssets", "Deleted file: " + file.getAbsolutePath());
-            } else {
-                Log.w("deleteAssets", "Failed to delete file: " + file.getAbsolutePath());
-            }
-        } else {
-            Log.i("deleteAssets", "File not found (skipped): " + file.getAbsolutePath());
-        }
-    }
-
-    private void deleteRecursiveIfExists(File dir) {
-        if (dir.exists()) {
-            deleteRecursive(dir);
-            Log.i("deleteAssets", "Deleted directory: " + dir.getAbsolutePath());
-        } else {
-            Log.i("deleteAssets", "Directory not found (skipped): " + dir.getAbsolutePath());
-        }
-    }
-
-    private void deleteRecursive(File fileOrDirectory) {
-        if (fileOrDirectory.isDirectory()) {
-            File[] children = fileOrDirectory.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    deleteRecursive(child);
-                }
-            }
-        }
-        fileOrDirectory.delete();
-    }
-
-
-
     private static final int STORAGE_PERMISSION_REQUEST_CODE = 2296;
     private static final int FILE_PICKER_REQUEST_CODE = 0;
     private static final int TRANSLATION_PICKER_REQUEST_CODE = 3;
@@ -574,52 +497,8 @@ public class MainActivity extends SDLActivity{
         startupLog(moved + " itens movidos de " + OLD_DATA_FOLDER + " para " + DATA_FOLDER);
     }
 
-    private void onStorageReady() {
-        if (storageFlowDone) {
-            return;
-        }
-        storageFlowDone = true;
-        checkAndSetupFiles();
-        if (!setupQuestionShown && setupGate.state() == SetupGate.State.READY) {
-            startIntroOrWaitForSetup();
-        }
-    }
-
-    public void checkAndSetupFiles() {
-        migrateOldDataFolder();
-        startupLog("Conferindo os arquivos");
-        doVersionCheck();
-        File targetRootFolder = new File(Environment.getExternalStorageDirectory(), DATA_FOLDER);
-        File assetsFolder = new File(targetRootFolder, "assets");
-        File sohOtrFile = new File(targetRootFolder, "2ship.o2r");
-
-        // Extractor assets from before the 4.0 base have no xml folder; the 4.0 extractor cannot use them.
-        boolean isMissingAssets = !new File(assetsFolder, "xml").isDirectory()
-                || !new File(assetsFolder, "filelists").isDirectory()
-                || !new File(assetsFolder, "Config_N64_US.xml").isFile();
-        boolean isMissingSohOtr = !sohOtrFile.isFile() || sohOtrFile.length() == 0;
-
-        startupLog("Faltando: assets=" + isMissingAssets + ", 2ship.o2r=" + isMissingSohOtr);
-        if (!targetRootFolder.exists() || isMissingAssets || isMissingSohOtr) {
-            setupQuestionShown = true;
-            SetupOverlay.ask(this, "Bem-vindo",
-                    "Antes de jogar, o app vai copiar os arquivos dele para a pasta " + DATA_FOLDER
-                            + ". Leva cerca de 30 segundos.",
-                    new String[] { "Começar" }, 0, -1, index -> {
-                        setupQuestionShown = false;
-                        SetupOverlay.progress(this, "Configuração inicial",
-                                "Copiando os arquivos do app para a pasta " + DATA_FOLDER + "...", -1f);
-                        Executors.newSingleThreadExecutor().execute(() -> setupFilesInBackground(targetRootFolder));
-                    });
-        } else {
-            // No setup needed: the game may start.
-            setupGate.open();
-        }
-    }
-
-
-    private void setupFilesInBackground(File targetRootFolder) {
-
+    // Saves of the very first builds, kept in the app's own folder (Android/data/<package>/files).
+    private void migrateAndroidDataLegacy(File targetRootFolder) {
         File sourceOldRoot = getExternalFilesDir(null);
         File sourceSavesDir = new File(sourceOldRoot, "saves"); // how to tell if there's anything to migrate
 
@@ -652,90 +531,239 @@ public class MainActivity extends SDLActivity{
             runOnUiThread(() -> Toast.makeText(this, "Saves migrados", Toast.LENGTH_SHORT).show());
         }
 
-        // Ensure root folder exists
-        if (!targetRootFolder.exists()) {
-            if (!targetRootFolder.mkdirs()) {
-                Log.e("setupFiles", "Failed to create root folder");
-                runOnUiThread(() -> showSetupError("Não foi possível criar a pasta " + DATA_FOLDER
-                        + " no armazenamento do aparelho.", targetRootFolder));
-                return;
-            }
-        }
-
-        // Always ensure mods folder exists
-        File targetModsDir = new File(targetRootFolder, "mods");
-        if (!targetModsDir.exists()) {
-            targetModsDir.mkdirs();
-        }
-
-        String failure = null;
-        // Copy assets/ from internal
-        File targetAssetsDir = new File(targetRootFolder, "assets");
-        try {
-            // Start from an empty folder, so nothing from an older version is mixed in.
-            deleteRecursiveIfExists(targetAssetsDir);
-            targetAssetsDir.mkdirs();
-            AssetCopyUtil.copyAssetsToExternal(this, "assets", targetAssetsDir.getAbsolutePath());
-            startupLog("assets copiados");
-        } catch (IOException e) {
-            e.printStackTrace();
-            startupLog("Erro ao copiar os assets: " + e);
-            failure = "Erro ao copiar os arquivos do app: " + e.getMessage();
-        }
-
-        // Copy 2ship.o2r from internal assets
-        File targetOtrFile = new File(targetRootFolder, "2ship.o2r");
-        try (InputStream in = getAssets().open("2ship.o2r");
-             OutputStream out = new FileOutputStream(targetOtrFile)) {
-
-            byte[] buffer = new byte[1024];
-            int read;
-            while ((read = in.read(buffer)) != -1) {
-                out.write(buffer, 0, read);
-            }
-
-            startupLog("2ship.o2r copiado (" + targetOtrFile.length() + " bytes)");
-
-        } catch (IOException e) {
-            e.printStackTrace();
-            startupLog("Erro ao copiar o 2ship.o2r: " + e);
-            failure = "Erro ao copiar o 2ship.o2r: " + e.getMessage();
-        }
-        if (failure != null) {
-            // The game must not start on incomplete files: the person can try again or leave.
-            final String text = failure;
-            runOnUiThread(() -> showSetupError(text, targetRootFolder));
-            return;
-        }
-
-        // The opening plays now, or after the game prepared its files on the same screen.
-        runOnUiThread(() -> {
-            if (gameFilesMissing()) {
-                introWaitsForSetup = true;
-                SetupOverlay.progress(this, "Preparando o jogo", "Um momento...", -1f);
-            } else {
-                SetupOverlay.hide(this);
-                startIntro();
-            }
-        });
-        setupGate.open();
     }
 
-    private void showSetupError(String text, File targetRootFolder) {
-        SetupOverlay.ask(this, "Não foi possível preparar o jogo", text, new String[] { "Tentar de novo", "Sair" }, 0,
-                1, index -> {
-                    if (index == 0) {
-                        SetupOverlay.progress(this, "Configuração inicial",
-                                "Copiando os arquivos do app para a pasta " + DATA_FOLDER + "...", -1f);
-                        Executors.newSingleThreadExecutor().execute(() -> setupFilesInBackground(targetRootFolder));
-                    } else {
-                        leaveBeforeGame("a preparação falhou");
+    private String portFilesStamp() {
+        long installedAt = 0;
+        try {
+            installedAt = getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime;
+        } catch (PackageManager.NameNotFoundException e) {
+            Log.w("setupFiles", "No package info", e);
+        }
+        return BuildConfig.VERSION_CODE + "/" + installedAt;
+    }
+
+    private PortInstall portInstall() {
+        return new PortInstall(dataFolder(), MainActivity::startupLog);
+    }
+
+    private PortInstall.Source apkAssets() {
+        final android.content.res.AssetManager assets = getAssets();
+        return new PortInstall.Source() {
+            @Override
+            public String[] list(String path) throws IOException {
+                return assets.list(path);
+            }
+
+            @Override
+            public InputStream open(String path) throws IOException {
+                return assets.open(path);
+            }
+        };
+    }
+
+    // Storage access is there: older installs are brought in, an install stopped half way is put back, and the
+    // port's files are checked against this APK. The game starts at once when they match.
+    private void onStorageReady() {
+        if (storageFlowDone) {
+            return;
+        }
+        storageFlowDone = true;
+        File root = dataFolder();
+        migrateOldDataFolder();
+        startupLog("Conferindo os arquivos");
+        try {
+            FileOps.mkdirs(root);
+        } catch (IOException e) {
+            startupLog("Erro: " + e.getMessage());
+            showSetupError("Não foi possível criar a pasta " + DATA_FOLDER + " no armazenamento do aparelho.", true);
+            return;
+        }
+        PortInstall install = portInstall();
+        install.recover();
+        dropGameArchiveBackupIfReplaced(root);
+
+        String installed = install.installedStamp();
+        String wanted = portFilesStamp();
+        boolean needsInstall = !wanted.equals(installed);
+        boolean needsMigration = false;
+        startupLog("Arquivos do app: " + (installed == null ? "incompletos ou ausentes" : "build " + installed)
+                + (needsInstall ? ", precisa instalar o build " + wanted : ", em dia")
+                + (needsMigration ? "; dados antigos em Android/data para migrar" : ""));
+
+        if (needsInstall) {
+            setupQuestionShown = true;
+            SetupOverlay.ask(this, "Bem-vindo",
+                    "Antes de jogar, o app vai copiar os arquivos dele para a pasta " + DATA_FOLDER
+                            + ". Leva cerca de 30 segundos.",
+                    new String[] { "Começar" }, 0, -1, index -> {
+                        setupQuestionShown = false;
+                        runSetupInBackground(true);
+                    });
+        } else if (needsMigration) {
+            runSetupInBackground(false);
+        } else {
+            setupGate.open();
+            startIntroOrWaitForSetup();
+        }
+    }
+
+    // Migration of Android/data, then (when `install`) the port's files, on a background thread. The game's
+    // thread is released only when everything it needs is there.
+    private void runSetupInBackground(boolean install) {
+        SetupOverlay.progress(this, "Configuração inicial", install
+                ? "Copiando os arquivos do app para a pasta " + DATA_FOLDER + "..."
+                : "Trazendo os seus arquivos da instalação antiga...", -1f);
+        installRunning = true;
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(this::checkSlowInstall,
+                INSTALL_SLOW_MS);
+        Executors.newSingleThreadExecutor().execute(() -> {
+            File root = dataFolder();
+            if (install) {
+                migrateAndroidDataLegacy(root);
+            }
+            String error = null;
+            if (install) {
+                try {
+                    FileOps.mkdirs(root);
+                } catch (IOException e) {
+                    error = "Não foi possível criar a pasta " + DATA_FOLDER + " no armazenamento do aparelho.";
+                }
+                if (error != null) {
+                    // shown below
+                } else if (root.getUsableSpace() < INSTALL_FREE_BYTES) {
+                    error = "Não há espaço livre suficiente no aparelho (são precisos uns "
+                            + (INSTALL_FREE_BYTES >> 20) + " MB). Libere espaço e tente de novo.";
+                } else {
+                    try {
+                        portInstall().install(apkAssets(), portFilesStamp());
+                        startupLog("Arquivos do app instalados e conferidos");
+                        handleGameArchiveVersion(root);
+                    } catch (IOException e) {
+                        startupLog("Erro ao instalar os arquivos do app: " + e.getMessage());
+                        error = "Não foi possível copiar os arquivos do app: " + e.getMessage()
+                                + "\n\nOs arquivos que já estavam na pasta não foram alterados.";
+                    }
+                }
+            }
+            installRunning = false;
+            final String failure = error;
+            runOnUiThread(() -> {
+                if (isFinishing()) {
+                    return;
+                }
+                if (failure != null) {
+                    showSetupError(failure, true);
+                    return;
+                }
+                setupGate.open();
+                // The opening plays now, or after the game prepared its files on the same screen.
+                if (gameFilesMissing()) {
+                    introWaitsForSetup = true;
+                    SetupOverlay.progress(this, "Preparando o jogo", "Um momento...", -1f);
+                } else {
+                    SetupOverlay.hide(this);
+                    startIntro();
+                }
+            });
+        });
+    }
+
+    private void checkSlowInstall() {
+        if (!installRunning || isFinishing()) {
+            return;
+        }
+        startupLog("A cópia dos arquivos passou de " + (INSTALL_SLOW_MS / 60000) + " minutos");
+        SetupOverlay.ask(this, "Demorando mais que o normal",
+                "A cópia dos arquivos do app ainda não terminou. Pode ser um cartão ou armazenamento lento.",
+                new String[] { "Continuar esperando", "Sair" }, 0, 0, index -> {
+                    if (index == 1) {
+                        leaveBeforeGame("a cópia demorou e a pessoa saiu");
+                        return;
+                    }
+                    if (installRunning) {
+                        SetupOverlay.progress(this, "Configuração inicial", "Copiando os arquivos do app...", -1f);
+                        new android.os.Handler(android.os.Looper.getMainLooper())
+                                .postDelayed(this::checkSlowInstall, INSTALL_SLOW_MS);
                     }
                 });
     }
 
+    // A failed install: the working files (if any) are untouched. Offers a new try, playing with the files already
+    // there when they are complete (from an earlier build), or leaving.
+    private void showSetupError(String text, boolean canRetry) {
+        boolean canKeep = portInstall().installedStamp() != null;
+        java.util.List<String> buttons = new java.util.ArrayList<>();
+        if (canRetry) {
+            buttons.add("Tentar de novo");
+        }
+        if (canKeep) {
+            buttons.add("Jogar com os arquivos atuais");
+        }
+        buttons.add("Sair");
+        final String[] labels = buttons.toArray(new String[0]);
+        SetupOverlay.ask(this, "Não foi possível preparar o jogo", text, labels, 0, labels.length - 1, index -> {
+            String choice = labels[Math.max(0, Math.min(index, labels.length - 1))];
+            if (choice.equals("Tentar de novo")) {
+                runSetupInBackground(true);
+            } else if (choice.equals("Jogar com os arquivos atuais")) {
+                startupLog("Seguindo com os arquivos do build " + portInstall().installedStamp());
+                SetupOverlay.hide(this);
+                setupGate.open();
+                startIntroOrWaitForSetup();
+            } else {
+                leaveBeforeGame("a preparação falhou");
+            }
+        });
+    }
 
+    // ----- The game's own archive (mm.o2r, made from the ROM)
+    //
+    // A new versionCode means a new port version whose mm.o2r must be made again. The old one is kept aside in
+    // .mm-o2r-anterior (not deleted) until the new one exists, and the version is only recorded once that is done.
+    // The version is also written in the data folder, so a reinstall (which clears the app's preferences) does not
+    // throw away a mm.o2r that is already right.
 
+    private static final String GAME_ARCHIVE = "mm.o2r";
+    private static final String GAME_ARCHIVE_BACKUP = ".mm-o2r-anterior";
+    private static final String GAME_ARCHIVE_VERSION = "mm.o2r.versao";
+
+    private int storedPortVersion(File root) {
+        if (preferences.contains("appVersion")) {
+            return preferences.getInt("appVersion", 1);
+        }
+        try {
+            return Integer.parseInt(new String(FileOps.readAll(new File(root, GAME_ARCHIVE_VERSION)),
+                    java.nio.charset.StandardCharsets.UTF_8).trim());
+        } catch (IOException | NumberFormatException e) {
+            return 1;
+        }
+    }
+
+    private void handleGameArchiveVersion(File root) throws IOException {
+        int current = BuildConfig.VERSION_CODE;
+        int stored = storedPortVersion(root);
+        File archive = new File(root, GAME_ARCHIVE);
+        if (current > stored && archive.isFile()) {
+            File backup = new File(root, GAME_ARCHIVE_BACKUP);
+            FileOps.mkdirs(backup);
+            FileOps.move(archive, new File(backup, GAME_ARCHIVE));
+            startupLog("Versão nova (" + stored + " -> " + current + "): mm.o2r antigo guardado em "
+                    + GAME_ARCHIVE_BACKUP + " até o novo ser criado");
+        }
+        FileOps.writeAtomically(new File(root, GAME_ARCHIVE_VERSION),
+                (current + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        preferences.edit().putInt("appVersion", current).apply();
+    }
+
+    private void dropGameArchiveBackupIfReplaced(File root) {
+        File backup = new File(root, GAME_ARCHIVE_BACKUP);
+        File archive = new File(root, GAME_ARCHIVE);
+        if (backup.exists() && archive.isFile() && archive.length() > 0) {
+            startupLog("mm.o2r novo criado: apagando o antigo guardado");
+            FileOps.deleteRecursive(backup);
+        }
+    }
 
     private native void nativeHandleSelectedFile(String filePath);
 
