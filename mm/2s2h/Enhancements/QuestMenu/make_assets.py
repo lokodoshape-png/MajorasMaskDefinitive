@@ -686,15 +686,13 @@ def font(path_in_repo=None, system=None, size=16):
 
 
 def write_texture(name, img, w, h):
-    """img (RGBA, w*HD x h*HD) as an RGBA32 Texture resource of w x h texels with an HD scale of HD."""
+    """img (RGBA, w*HD x h*HD) as a plain RGBA32 texture at its full size. The game loads it with
+    gDPLoadTextureTile and texture coordinates in its own texels (a scaled Texture v1 came out garbled)."""
     img = img.convert("RGBA")
     assert img.size == (w * HD, h * HD), (name, img.size)
-    data = img.tobytes()
-    head = struct.pack("<BBBBIIQ", 0, 0, 0, 0, 0x4F544558, 1, 0xDEADBEEFDEADBEEF)
-    head += b"\0" * (0x40 - len(head))
-    body = struct.pack("<IIIIffI", 1, w, h, 0, float(HD), float(HD), len(data)) + data
-    with open(os.path.join(OUT, name), "wb") as f:
-        f.write(head + body)
+    img.save(os.path.join(OUT, name + ".rgba32.png"))
+    if os.path.exists(os.path.join(OUT, name)):
+        os.remove(os.path.join(OUT, name))
     preview = os.environ.get("QUEST_PREVIEW")
     if preview:
         img.save(os.path.join(preview, name + ".png"))

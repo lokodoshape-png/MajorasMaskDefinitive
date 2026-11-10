@@ -22,7 +22,7 @@ android {
         targetSdkVersion 33
         // Raising versionCode makes MainActivity replace the copied port files (and the old mm.o2r) on update.
         versionCode 40
-        versionName "4.0.2-mm3d.12"
+        versionName "4.0.2-mm3d.13"
         externalNativeBuild {
             //ndkBuild {
             //    arguments "APP_PLATFORM=android-23"

@@ -1424,16 +1424,25 @@ void KaleidoScope_DrawInfoPanel(PlayState* play) {
             POLY_OPA_DISP = Gfx_DrawTexQuad4b(POLY_OPA_DISP, gPauseToEquipENGTex, G_IM_FMT_IA, 64, 16, 4);
         } else if ((pauseCtx->pageIndex == PAUSE_QUEST) && (pauseCtx->cursorPoint[PAUSE_QUEST] == QUEST_SKULL_TOKEN) &&
                    QuestMenu_PauseEntryShown()) {
-            // 2S2H [Enhancement] The QUESTS entry's name, like the items' names
-            pauseCtx->infoPanelVtx[16].v.ob[0] = pauseCtx->infoPanelVtx[18].v.ob[0] = -63;
-            pauseCtx->infoPanelVtx[17].v.ob[0] = pauseCtx->infoPanelVtx[19].v.ob[0] =
-                pauseCtx->infoPanelVtx[16].v.ob[0] + 128;
-            pauseCtx->infoPanelVtx[17].v.tc[0] = pauseCtx->infoPanelVtx[19].v.tc[0] = 128 * (1 << 5);
-            gSPVertex(POLY_OPA_DISP++, &pauseCtx->infoPanelVtx[16], 4, 0);
+            // 2S2H [Enhancement] The QUESTS entry's name, like the items' names. A copy of the panel's name quad, so
+            // the other names keep their texture coordinates; the name is a 512x64 texture, loaded with LoadTile.
+            Vtx* nameVtx = GRAPH_ALLOC(play->state.gfxCtx, 4 * sizeof(Vtx));
+            s32 i;
+
+            for (i = 0; i < 4; i++) {
+                nameVtx[i] = pauseCtx->infoPanelVtx[16 + i];
+            }
+            nameVtx[0].v.ob[0] = nameVtx[2].v.ob[0] = -63;
+            nameVtx[1].v.ob[0] = nameVtx[3].v.ob[0] = -63 + 128;
+            nameVtx[0].v.tc[0] = nameVtx[2].v.tc[0] = 0;
+            nameVtx[1].v.tc[0] = nameVtx[3].v.tc[0] = 512 << 5;
+            nameVtx[0].v.tc[1] = nameVtx[1].v.tc[1] = 0;
+            nameVtx[2].v.tc[1] = nameVtx[3].v.tc[1] = 64 << 5;
+            gSPVertex(POLY_OPA_DISP++, nameVtx, 4, 0);
             gDPSetPrimColor(POLY_OPA_DISP++, 0, 0, 255, 255, 255, 255);
-            gDPLoadTextureBlock(POLY_OPA_DISP++, dgQuestNameTex, G_IM_FMT_RGBA, G_IM_SIZ_32b, 128, 16, 0,
-                                G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMASK, G_TX_NOMASK,
-                                G_TX_NOLOD, G_TX_NOLOD);
+            gDPLoadTextureTile(POLY_OPA_DISP++, dgQuestNameTex, G_IM_FMT_RGBA, G_IM_SIZ_32b, 512, 64, 0, 0, 511, 63, 0,
+                               G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMASK, G_TX_NOMASK,
+                               G_TX_NOLOD, G_TX_NOLOD);
             gSP1Quadrangle(POLY_OPA_DISP++, 0, 2, 3, 1, 0);
         } else if ((pauseCtx->pageIndex == PAUSE_MAP) && sInDungeonScene) {
             // No code in this case

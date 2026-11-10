@@ -8,6 +8,11 @@ O jogo não vem com a ROM nem com assets da Nintendo. Você extrai os seus da su
 
 ## Base 4.0.2 (branch `mm3d-4.0`)
 
+### 2026-11-10 — versão 4.0.2-mm3d.13
+- **Pergaminho QUESTS sem listras.** O pergaminho, a moldura, o ponto vermelho, o cartão QUESTS e o nome Diário de
+  Missões apareciam embaralhados, em listras. Agora as imagens em alta resolução são carregadas inteiras e aparecem
+  nítidas, nos mesmos lugares.
+
 ### 2026-11-04 — versão 4.0.2-mm3d.12
 - **Pergaminho QUESTS no pause.** Na página Status da Jornada, entre os dois quadrados de baixo (aljava e bolsa de
   bombas), fica o pergaminho do Diário de Missões, desenhado em alta resolução: papel envelhecido, a lista de tarefas,

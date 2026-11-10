@@ -46,6 +46,16 @@ static void QuestEntry_SetQuad(Vtx* v, f32 cx, f32 cy, f32 w, f32 h, s16 tw, s16
     }
 }
 
+// Draws the quad loaded at vertex 0 with a full-size RGBA32 texture of tw x th texels. LoadTile, not LoadBlock:
+// these textures are larger than a LoadBlock allows (4095 texels).
+static Gfx* QuestEntry_TexQuad(Gfx* gfx, TexturePtr tex, s16 tw, s16 th) {
+    gDPLoadTextureTile(gfx++, tex, G_IM_FMT_RGBA, G_IM_SIZ_32b, tw, th, 0, 0, tw - 1, th - 1, 0,
+                       G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD,
+                       G_TX_NOLOD);
+    gSP1Quadrangle(gfx++, 0, 2, 3, 1, 0);
+    return gfx;
+}
+
 static void QuestEntry_Draw(PlayState* play) {
     PauseContext* pauseCtx = &play->pauseCtx;
     Vtx* vtx = GRAPH_ALLOC(play->state.gfxCtx, 16 * sizeof(Vtx));
@@ -70,10 +80,10 @@ static void QuestEntry_Draw(PlayState* play) {
     // Selected: the gold frame and its glow, breathing softly; a flash while the scroll opens.
     if (sQuestEntrySelect > 0.0f) {
         f32 glow = sQuestEntrySelect * (0.65f + 0.35f * pulse) + press * 0.6f;
-        QuestEntry_SetQuad(&vtx[0], QUEST_ENTRY_X, cy, 38.0f + press * 6.0f, 36.0f + press * 6.0f, 40, 38, 255);
+        QuestEntry_SetQuad(&vtx[0], QUEST_ENTRY_X, cy, 38.0f + press * 6.0f, 36.0f + press * 6.0f, 160, 152, 255);
         gSPVertex(POLY_OPA_DISP++, &vtx[0], 4, 0);
         gDPSetPrimColor(POLY_OPA_DISP++, 0, 0, 255, 255, 255, (u8)(CLAMP_MAX(glow, 1.0f) * alpha));
-        KaleidoScope_DrawTexQuadRGBA32(play->state.gfxCtx, dgQuestScrollFrameTex, 40, 38, 0);
+        POLY_OPA_DISP = QuestEntry_TexQuad(POLY_OPA_DISP, dgQuestScrollFrameTex, 160, 152);
     }
 
     // The scroll: a little bigger when selected, squashed and darker for a moment when pressed, then it swells open.
@@ -81,30 +91,28 @@ static void QuestEntry_Draw(PlayState* play) {
     if (sQuestEntryPress != 0) {
         scale = (press < 0.3f) ? (scale - press * 0.3f) : (scale - 0.09f + (press - 0.3f) * 0.45f);
     }
-    QuestEntry_SetQuad(&vtx[4], QUEST_ENTRY_X, cy, 24.0f * scale, 22.0f * scale, 28, 26, 255);
+    QuestEntry_SetQuad(&vtx[4], QUEST_ENTRY_X, cy, 24.0f * scale, 22.0f * scale, 112, 104, 255);
     gSPVertex(POLY_OPA_DISP++, &vtx[4], 4, 0);
     gDPSetPrimColor(POLY_OPA_DISP++, 0, 0, 255, 255, 255, alpha);
-    KaleidoScope_DrawTexQuadRGBA32(play->state.gfxCtx,
-                                   (sQuestEntryPress != 0 && press < 0.3f) ? dgQuestScrollPressedTex
-                                                                           : dgQuestScrollTex,
-                                   28, 26, 0);
+    POLY_OPA_DISP = QuestEntry_TexQuad(
+        POLY_OPA_DISP, (sQuestEntryPress != 0 && press < 0.3f) ? dgQuestScrollPressedTex : dgQuestScrollTex, 112, 104);
 
     // New quests since the menu was last opened: a red mark on the scroll's corner.
     if (QuestMenu_HasNews() && (sQuestEntryPress == 0)) {
-        QuestEntry_SetQuad(&vtx[8], QUEST_ENTRY_X + 11.0f, cy + 10.0f, 9.0f + pulse * 1.0f, 9.0f + pulse * 1.0f, 10,
-                           10, 255);
+        QuestEntry_SetQuad(&vtx[8], QUEST_ENTRY_X + 11.0f, cy + 10.0f, 9.0f + pulse * 1.0f, 9.0f + pulse * 1.0f, 40,
+                           40, 255);
         gSPVertex(POLY_OPA_DISP++, &vtx[8], 4, 0);
         gDPSetPrimColor(POLY_OPA_DISP++, 0, 0, 255, 255, 255, alpha);
-        KaleidoScope_DrawTexQuadRGBA32(play->state.gfxCtx, dgQuestScrollNewTex, 10, 10, 0);
+        POLY_OPA_DISP = QuestEntry_TexQuad(POLY_OPA_DISP, dgQuestScrollNewTex, 40, 40);
     }
 
     // The QUESTS card above the scroll, fading in while it is selected.
     if (sQuestEntrySelect > 0.0f) {
         f32 rise = (1.0f - sQuestEntrySelect) * 4.0f;
-        QuestEntry_SetQuad(&vtx[12], QUEST_ENTRY_X, cy + 31.0f - rise, 50.0f, 25.0f, 64, 32, 255);
+        QuestEntry_SetQuad(&vtx[12], QUEST_ENTRY_X, cy + 31.0f - rise, 50.0f, 25.0f, 256, 128, 255);
         gSPVertex(POLY_OPA_DISP++, &vtx[12], 4, 0);
         gDPSetPrimColor(POLY_OPA_DISP++, 0, 0, 255, 255, 255, (u8)(sQuestEntrySelect * alpha));
-        KaleidoScope_DrawTexQuadRGBA32(play->state.gfxCtx, dgQuestCardTex, 64, 32, 0);
+        POLY_OPA_DISP = QuestEntry_TexQuad(POLY_OPA_DISP, dgQuestCardTex, 256, 128);
     }
 
     CLOSE_DISPS(play->state.gfxCtx);
