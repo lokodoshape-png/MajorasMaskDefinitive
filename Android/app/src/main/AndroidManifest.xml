@@ -56,6 +56,8 @@
     <!-- Settings > Mods: downloads from Google Drive -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Android 11+: "all files access" for the data folder in the storage's root. Android 7-10: READ/WRITE below,
+         and requestLegacyExternalStorage, without which Android 10 hides that folder from the app. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
@@ -74,6 +76,7 @@
     <application android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="true"
+        android:requestLegacyExternalStorage="true"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
         android:hardwareAccelerated="true"
         android:appCategory="game" >

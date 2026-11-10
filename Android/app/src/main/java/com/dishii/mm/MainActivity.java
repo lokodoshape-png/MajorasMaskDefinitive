@@ -24,7 +24,6 @@ import java.io.StringWriter;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 
 import android.Manifest;
@@ -63,22 +62,18 @@ public class MainActivity extends SDLActivity{
     // Data folder of the builds before the rename; its files are moved into DATA_FOLDER.
     static final String OLD_DATA_FOLDER = "2S2H-MM3D";
 
-    private static final CountDownLatch setupLatch = new CountDownLatch(1);
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-
         startStartupLog();
         preferences = getSharedPreferences("com.dishii.mm.prefs",Context.MODE_PRIVATE);
 
-        // Check if storage permissions are granted
-        if (hasStoragePermission()) {
-            checkAndSetupFiles();
-        } else {
-            requestStoragePermission();
-        }
-
+        // The activity is set up first (SDL's layout, the touch controls); the game's thread does not start the
+        // game before the files are ready (setupGate), whatever the order the permission answers come back in.
         super.onCreate(savedInstanceState);
+        if (mBrokenLibraries) {
+            setupGate.cancel("bibliotecas nativas não carregaram");
+            return; // SDLActivity already shows the error and closes
+        }
 
         setupControllerOverlay();
         attachController();
@@ -86,13 +81,11 @@ public class MainActivity extends SDLActivity{
         setButton(ControllerButtons.AXIS_LT, false);
         setButton(ControllerButtons.AXIS_RT, false);
 
-        // The opening video goes over everything, including the touch controls, while the game boots under it.
-        // After an update the setup question comes first; the video starts once it is answered, while the files are
-        // copied (see checkAndSetupFiles).
-        // Without the game's files (mm.o2r), the preparation screen comes first and the opening plays after it.
-        if (!setupQuestionShown) {
-            startIntroOrWaitForSetup();
-        }
+        // Storage access first, then the port's files (checkAndSetupFiles). The opening video goes over everything,
+        // including the touch controls, while the game boots under it. After an update the setup question comes
+        // first; the video starts once it is answered. Without the game's files (mm.o2r), the preparation screen
+        // comes first and the opening plays after it.
+        beginStartup();
     }
 
     // ----- The preparation screen (SetupOverlay.java; the game's side is mm/2s2h/Extractor/SetupScreen.cpp)
@@ -213,9 +206,19 @@ public class MainActivity extends SDLActivity{
     @Override
     protected void onResume() {
         super.onResume();
+        // Back from the app's settings, where the storage permission may have been allowed.
+        recheckStorageAccess(false);
         if (intro != null && intro.isActive() && !introPausedForSetup) {
             intro.resume();
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        // The game's thread may still wait for the files; it must be released, or SDL's onDestroy waits for it
+        // forever.
+        setupGate.cancel("app fechado");
+        super.onDestroy();
     }
 
     // <data folder>/inicio.log: each launch starts it, the native side (mm/2s2h/Android/StartupLog.cpp) adds to it.
@@ -274,12 +277,185 @@ public class MainActivity extends SDLActivity{
         });
     }
 
-    public static void waitForSetupFromNative() {
+    // ----- Startup: storage access, then the port's files, then the game
+    //
+    // The game's thread (mm/src/code/main.c) waits in waitForSetupFromNative() and only starts once setupGate is
+    // opened, which happens only when the port's files in the data folder are complete and checked (PortInstall).
+    // The wait always ends: the gate is cancelled when the person chooses to leave, when the activity is destroyed,
+    // or after GATE_TIMEOUT_MS. Every refusal of a permission or failed copy shows a message with a way to try again.
+
+    private static final SetupGate setupGate = new SetupGate();
+    // Nothing the app does before the game starts takes this long; past it the wait is given up (the app closes).
+    private static final long GATE_TIMEOUT_MS = 30L * 60L * 1000L;
+    // A copy of the port's files takes about 30 seconds; past this the person is asked whether to keep waiting.
+    private static final long INSTALL_SLOW_MS = 5L * 60L * 1000L;
+    // Free space wanted before the port's files are copied (assets and 2ship.o2r, with room to spare).
+    private static final long INSTALL_FREE_BYTES = 256L << 20;
+
+    // The storage permission was asked for and the answer has not come back yet.
+    private boolean waitingForStorageAccess = false;
+    // onStorageReady() ran: the rest of the startup is under way.
+    private boolean storageFlowDone = false;
+    private volatile boolean installRunning = false;
+
+    // From the game's thread: true when the files are ready and the game may start, false when it must not (the
+    // person left, or the time ran out); main.c then returns without starting the game.
+    public static boolean waitForSetupFromNative() {
         try {
-            setupLatch.await();  // Block until setup is complete
+            boolean ready = setupGate.await(GATE_TIMEOUT_MS, 30000,
+                    waited -> startupLog("Jogo ainda esperando a preparação dos arquivos (" + (waited / 1000) + " s)"));
+            if (!ready) {
+                startupLog("O jogo não vai abrir: " + setupGate.reason());
+                final MainActivity activity = (MainActivity) mSingleton;
+                if (activity != null && setupGate.reason().startsWith("tempo")) {
+                    activity.runOnUiThread(() -> Toast.makeText(activity,
+                            "A preparação dos arquivos não terminou a tempo. Abra o app de novo.", Toast.LENGTH_LONG)
+                            .show());
+                }
+            }
+            return ready;
         } catch (InterruptedException e) {
-            e.printStackTrace();
+            Thread.currentThread().interrupt();
+            setupGate.cancel("interrompido");
+            return false;
         }
+    }
+
+    private static File dataFolder() {
+        return new File(Environment.getExternalStorageDirectory(), DATA_FOLDER);
+    }
+
+    // Android 11+: "all files access" (MANAGE_EXTERNAL_STORAGE). Android 7-10: READ and WRITE_EXTERNAL_STORAGE
+    // (with requestLegacyExternalStorage in the manifest for Android 10).
+    private boolean hasStorageAccess() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            return Environment.isExternalStorageManager();
+        }
+        return checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+                && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void beginStartup() {
+        if (hasStorageAccess()) {
+            onStorageReady();
+        } else {
+            requestStorageAccess();
+        }
+    }
+
+    private void requestStorageAccess() {
+        waitingForStorageAccess = true;
+        startupLog("Pedindo a permissão de arquivos");
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+            intent.setData(Uri.parse("package:" + getPackageName()));
+            try {
+                startActivityForResult(intent, STORAGE_PERMISSION_REQUEST_CODE);
+            } catch (android.content.ActivityNotFoundException e) {
+                // Some systems only have the general list of apps with that access.
+                try {
+                    startActivityForResult(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
+                            STORAGE_PERMISSION_REQUEST_CODE);
+                } catch (android.content.ActivityNotFoundException e2) {
+                    showStorageDenied(true);
+                }
+            }
+        } else {
+            requestPermissions(new String[] { Manifest.permission.READ_EXTERNAL_STORAGE,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE }, STORAGE_PERMISSION_REQUEST_CODE);
+        }
+    }
+
+    // Android 7-10: the answer to requestPermissions().
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != STORAGE_PERMISSION_REQUEST_CODE) {
+            return;
+        }
+        if (hasStorageAccess()) {
+            startupLog("Permissão de arquivos concedida");
+            waitingForStorageAccess = false;
+            onStorageReady();
+            return;
+        }
+        // An empty answer means the request was interrupted (the activity went away): ask again on return.
+        if (grantResults == null || grantResults.length == 0) {
+            startupLog("Pedido de permissão interrompido");
+            return;
+        }
+        // No rationale after a refusal means "don't ask again" was chosen: only the app's settings can change it.
+        boolean canAskAgain = shouldShowRequestPermissionRationale(Manifest.permission.READ_EXTERNAL_STORAGE)
+                || shouldShowRequestPermissionRationale(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        startupLog("Permissão de arquivos negada" + (canAskAgain ? "" : " (não perguntar de novo)"));
+        showStorageDenied(!canAskAgain);
+    }
+
+    // Explains the refusal and offers a new try (or the app's settings, where the system no longer asks), or to
+    // leave. Nothing is lost: the app can be opened again later and asks again.
+    private void showStorageDenied(boolean viaSettings) {
+        String text = "Sem acesso aos arquivos, o jogo não consegue ler a ROM, guardar os saves nem usar mods e "
+                + "traduções na pasta " + DATA_FOLDER + ".\n\n";
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            text += "Na tela seguinte, ative \"Permitir acesso para gerenciar todos os arquivos\" para este app.";
+        } else if (viaSettings) {
+            text += "O Android não vai perguntar de novo. Abra as configurações do app, toque em Permissões e "
+                    + "permita Arquivos e mídia (ou Armazenamento).";
+        } else {
+            text += "Toque em Tentar de novo e permita o acesso.";
+        }
+        String retry = viaSettings && Build.VERSION.SDK_INT < Build.VERSION_CODES.R ? "Abrir configurações"
+                : "Tentar de novo";
+        SetupOverlay.ask(this, "Permissão necessária", text, new String[] { retry, "Sair" }, 0, 1, index -> {
+            if (index == 0) {
+                if (viaSettings && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                    waitingForStorageAccess = true;
+                    openAppSettings();
+                } else {
+                    requestStorageAccess();
+                }
+            } else {
+                leaveBeforeGame("o acesso aos arquivos foi negado");
+            }
+        });
+    }
+
+    private void openAppSettings() {
+        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+        intent.setData(Uri.parse("package:" + getPackageName()));
+        try {
+            startActivity(intent);
+        } catch (android.content.ActivityNotFoundException e) {
+            Toast.makeText(this, "Abra Configurações > Apps > " + getString(R.string.app_name) + " > Permissões.",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    // Back from the system's permission screens: onActivityResult (fromResult) or onResume, which also covers the
+    // app's settings and a permission allowed by hand while the refusal message was up. Only the result of the
+    // "all files access" screen counts as a refusal; onResume also runs while that screen is opening.
+    private void recheckStorageAccess(boolean fromResult) {
+        if (storageFlowDone) {
+            return;
+        }
+        if (hasStorageAccess()) {
+            startupLog("Permissão de arquivos concedida");
+            waitingForStorageAccess = false;
+            SetupOverlay.hide(this);
+            onStorageReady();
+        } else if (fromResult && waitingForStorageAccess && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            waitingForStorageAccess = false;
+            startupLog("Acesso a todos os arquivos não concedido");
+            showStorageDenied(true);
+        }
+    }
+
+    // The person chose not to go on: the game's thread is released without starting the game, and the app closes.
+    private void leaveBeforeGame(String why) {
+        startupLog("Saindo antes do jogo: " + why);
+        setupGate.cancel(why);
+        SetupOverlay.hide(this);
+        finish();
     }
 
     // Runs before every setup check, whichever way the storage permission was granted. A new versionCode means a new
@@ -359,14 +535,6 @@ public class MainActivity extends SDLActivity{
 
 
 
-    // Check if storage permission is granted
-    private boolean hasStoragePermission() {
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE)
-                == PackageManager.PERMISSION_GRANTED &&
-                ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                        == PackageManager.PERMISSION_GRANTED;
-    }
-
     private static final int STORAGE_PERMISSION_REQUEST_CODE = 2296;
     private static final int FILE_PICKER_REQUEST_CODE = 0;
     private static final int TRANSLATION_PICKER_REQUEST_CODE = 3;
@@ -379,31 +547,6 @@ public class MainActivity extends SDLActivity{
     // Must match mm/2s2h/Language/GameLanguage.cpp.
     private static final String TRANSLATION_FOLDER = "traducoes/pt-BR";
     private static final String LANGUAGE_FILE = "idioma.txt";
-
-    private void requestStoragePermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            // Android 11+ → MANAGE_EXTERNAL_STORAGE
-            if (!Environment.isExternalStorageManager()) {
-                Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
-                intent.setData(Uri.parse("package:" + getPackageName()));
-                startActivityForResult(intent, STORAGE_PERMISSION_REQUEST_CODE);
-            } else {
-                // Already granted
-                checkAndSetupFiles();
-            }
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            // Android 6–10 → request READ/WRITE at runtime
-            ActivityCompat.requestPermissions(this,
-                    new String[]{
-                            Manifest.permission.READ_EXTERNAL_STORAGE,
-                            Manifest.permission.WRITE_EXTERNAL_STORAGE
-                    },
-                    STORAGE_PERMISSION_REQUEST_CODE);
-        } else {
-            // Below Android 6 → permissions granted at install time
-            checkAndSetupFiles();
-        }
-    }
 
     // Moves mm.o2r, saves, mods and the rest from the folder used before the rename. Files already in the new folder
     // are kept; whatever could not be moved stays in the old folder.
@@ -429,6 +572,17 @@ public class MainActivity extends SDLActivity{
         }
         oldFolder.delete(); // only succeeds when everything was moved
         startupLog(moved + " itens movidos de " + OLD_DATA_FOLDER + " para " + DATA_FOLDER);
+    }
+
+    private void onStorageReady() {
+        if (storageFlowDone) {
+            return;
+        }
+        storageFlowDone = true;
+        checkAndSetupFiles();
+        if (!setupQuestionShown && setupGate.state() == SetupGate.State.READY) {
+            startIntroOrWaitForSetup();
+        }
     }
 
     public void checkAndSetupFiles() {
@@ -458,8 +612,8 @@ public class MainActivity extends SDLActivity{
                         Executors.newSingleThreadExecutor().execute(() -> setupFilesInBackground(targetRootFolder));
                     });
         } else {
-            // No setup needed, still need to count down
-            setupLatch.countDown();
+            // No setup needed: the game may start.
+            setupGate.open();
         }
     }
 
@@ -502,9 +656,8 @@ public class MainActivity extends SDLActivity{
         if (!targetRootFolder.exists()) {
             if (!targetRootFolder.mkdirs()) {
                 Log.e("setupFiles", "Failed to create root folder");
-                runOnUiThread(() -> Toast.makeText(this, "Não foi possível criar a pasta " + DATA_FOLDER, Toast.LENGTH_LONG).show());
-                runOnUiThread(() -> SetupOverlay.hide(this));
-                setupLatch.countDown();
+                runOnUiThread(() -> showSetupError("Não foi possível criar a pasta " + DATA_FOLDER
+                        + " no armazenamento do aparelho.", targetRootFolder));
                 return;
             }
         }
@@ -515,6 +668,7 @@ public class MainActivity extends SDLActivity{
             targetModsDir.mkdirs();
         }
 
+        String failure = null;
         // Copy assets/ from internal
         File targetAssetsDir = new File(targetRootFolder, "assets");
         try {
@@ -526,7 +680,7 @@ public class MainActivity extends SDLActivity{
         } catch (IOException e) {
             e.printStackTrace();
             startupLog("Erro ao copiar os assets: " + e);
-            runOnUiThread(() -> Toast.makeText(this, "Erro ao copiar os arquivos", Toast.LENGTH_LONG).show());
+            failure = "Erro ao copiar os arquivos do app: " + e.getMessage();
         }
 
         // Copy 2ship.o2r from internal assets
@@ -545,7 +699,13 @@ public class MainActivity extends SDLActivity{
         } catch (IOException e) {
             e.printStackTrace();
             startupLog("Erro ao copiar o 2ship.o2r: " + e);
-            runOnUiThread(() -> Toast.makeText(this, "Erro ao copiar o 2ship.o2r", Toast.LENGTH_LONG).show());
+            failure = "Erro ao copiar o 2ship.o2r: " + e.getMessage();
+        }
+        if (failure != null) {
+            // The game must not start on incomplete files: the person can try again or leave.
+            final String text = failure;
+            runOnUiThread(() -> showSetupError(text, targetRootFolder));
+            return;
         }
 
         // The opening plays now, or after the game prepared its files on the same screen.
@@ -558,7 +718,20 @@ public class MainActivity extends SDLActivity{
                 startIntro();
             }
         });
-        setupLatch.countDown();
+        setupGate.open();
+    }
+
+    private void showSetupError(String text, File targetRootFolder) {
+        SetupOverlay.ask(this, "Não foi possível preparar o jogo", text, new String[] { "Tentar de novo", "Sair" }, 0,
+                1, index -> {
+                    if (index == 0) {
+                        SetupOverlay.progress(this, "Configuração inicial",
+                                "Copiando os arquivos do app para a pasta " + DATA_FOLDER + "...", -1f);
+                        Executors.newSingleThreadExecutor().execute(() -> setupFilesInBackground(targetRootFolder));
+                    } else {
+                        leaveBeforeGame("a preparação falhou");
+                    }
+                });
     }
 
 
@@ -626,14 +799,8 @@ public class MainActivity extends SDLActivity{
             nativeHandleSelectedFile(destinationFile.getPath());
 
         } else if (requestCode == STORAGE_PERMISSION_REQUEST_CODE) {
-            // Handle MANAGE_EXTERNAL_STORAGE result
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                if (Environment.isExternalStorageManager()) {
-                    checkAndSetupFiles();
-                } else {
-                    Toast.makeText(this, "É preciso permitir o acesso a todos os arquivos para o app funcionar.", Toast.LENGTH_LONG).show();
-                }
-            }
+            // Back from the "all files access" screen (Android 11+).
+            recheckStorageAccess(true);
         }
     }
 

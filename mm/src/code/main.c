@@ -53,14 +53,29 @@ void Heaps_Free(void);
 
 #ifdef __ANDROID__
 #include <jni.h>
+#include <stdbool.h>
 #include <SDL2/SDL.h>
-// MainActivity copies the port's files into the data folder on first run; the game must not start before that.
-static void WaitForJavaSetup(void) {
+// MainActivity copies and checks the port's files on first run and after an update; the game must not start
+// before that. The wait ends either way: true when the files are ready, false when the game must not start (the
+// person left before the files were ready, the app closed, or the wait timed out).
+static bool WaitForJavaSetup(void) {
     JNIEnv* env = SDL_AndroidGetJNIEnv();
     jclass mainActivityClass = (*env)->FindClass(env, "com/dishii/mm/MainActivity");
-    jmethodID waitMethod = (*env)->GetStaticMethodID(env, mainActivityClass, "waitForSetupFromNative", "()V");
-    (*env)->CallStaticVoidMethod(env, mainActivityClass, waitMethod);
+    if (mainActivityClass == NULL) {
+        (*env)->ExceptionClear(env);
+        return false;
+    }
+    jmethodID waitMethod = (*env)->GetStaticMethodID(env, mainActivityClass, "waitForSetupFromNative", "()Z");
+    jboolean ready = JNI_FALSE;
+    if (waitMethod != NULL) {
+        ready = (*env)->CallStaticBooleanMethod(env, mainActivityClass, waitMethod);
+    }
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        ready = JNI_FALSE;
+    }
     (*env)->DeleteLocalRef(env, mainActivityClass);
+    return ready == JNI_TRUE;
 }
 #endif
 
@@ -73,7 +88,10 @@ static void WaitForJavaSetup(void) {
 int SDL_main(int argc, char** argv /* void* arg*/) {
     StartupLog_Init();
     StartupLog_Step("Esperando a preparação dos arquivos (Java)");
-    WaitForJavaSetup();
+    if (!WaitForJavaSetup()) {
+        StartupLog_Step("Preparação dos arquivos cancelada: o jogo não inicia");
+        return 0;
+    }
     StartupLog_Step("Arquivos prontos");
 #else
 void SDL_main(int argc, char** argv /* void* arg*/) {
